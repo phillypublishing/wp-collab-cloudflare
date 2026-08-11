@@ -24,34 +24,54 @@ Four pieces work together:
 
 | Component | Path | Purpose |
 |-----------|------|---------|
-| **Worker** | [`worker/`](worker/) | Cloudflare Worker + Durable Object running [y-partyserver](https://github.com/y-sweet/y-partyserver) as a Yjs sync relay |
+| **Worker** | [`worker/`](worker/) | Cloudflare Worker + Durable Object running [y-partyserver](https://github.com/cloudflare/partykit/tree/main/packages/y-partyserver) as a Yjs sync relay |
 | **Plugin** | [`plugin/wp-collab-cf/`](plugin/wp-collab-cf/) | WordPress plugin that hooks into the `sync.providers` filter to swap HTTP polling for a WebSocket connection to the Worker |
 | **MU-Plugin** | [`mu-plugin/`](mu-plugin/) | Enables `WP_ALLOW_COLLABORATION` and sets the `WP_COLLAB_CF_WS_URL` constant that the plugin reads |
 | **Demo Plugin** | [`plugin/wp-collab-cf-demo/`](plugin/wp-collab-cf-demo/) | Optional. Magic link that creates temporary guest users restricted to a single demo post, useful for sharing a live demo |
 
 ## Setup
 
-### 1. Deploy the Worker
+### 1. Create the shared credentials
+
+Generate one stable site ID and one random signing secret. The site ID is a
+namespace; the secret must remain server-side.
+
+```bash
+openssl rand -hex 16 # use as the site ID
+openssl rand -hex 32 # use as the signing secret
+```
+
+The same values are configured in WordPress below. Configure the Worker's
+secret as a JSON object so one Worker can recognize distinct site keys:
+
+```json
+{"YOUR_SITE_ID":"YOUR_SIGNING_SECRET"}
+```
+
+### 2. Deploy the Worker
 
 ```bash
 cd worker
 npm install
 # Authenticate with Cloudflare (or set CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN)
 wrangler login
+wrangler secret put COLLAB_AUTH_KEYS
 wrangler deploy
 ```
 
 Note the deployed URL (e.g. `wss://wp-collab-cloudflare.your-subdomain.workers.dev`).
 
-### 2. Configure WordPress
+### 3. Configure WordPress
 
 Copy the [mu-plugin](mu-plugin/wp-collab-cf-config.php) to `wp-content/mu-plugins/` and set your Worker URL:
 
 ```php
 define( 'WP_COLLAB_CF_WS_URL', 'wss://wp-collab-cloudflare.your-subdomain.workers.dev' );
+define( 'WP_COLLAB_CF_SITE_ID', 'YOUR_SITE_ID' );
+define( 'WP_COLLAB_CF_AUTH_SECRET', 'YOUR_SIGNING_SECRET' );
 ```
 
-### 3. Install the Plugin
+### 4. Install the Plugin
 
 ```bash
 cd plugin/wp-collab-cf
@@ -61,7 +81,7 @@ npm run build
 
 Copy the `plugin/wp-collab-cf/` directory (with the `build/` output) into `wp-content/plugins/` and activate it.
 
-### 4. Test
+### 5. Test
 
 Open the same post in two browser tabs. Edits in one tab should appear in the other in real time.
 
@@ -92,6 +112,8 @@ Or via option: `wp option update wp_collab_cf_demo_post_id 123`
 
 1. The **mu-plugin** defines `WP_ALLOW_COLLABORATION` (enabling RTC) and `WP_COLLAB_CF_WS_URL` (the relay endpoint).
 
-2. The **plugin** uses the [`sync.providers`](https://developer.wordpress.org/reference/hooks/sync-providers/) filter to replace WordPress's default HTTP polling provider with a WebSocket provider that connects to the Cloudflare Worker. It reuses WordPress's bundled Yjs instance (via `wp.sync.Y`) to avoid duplicate library issues.
+2. The **plugin** uses the [`sync.providers`](https://developer.wordpress.org/reference/hooks/sync-providers/) filter to replace WordPress's default HTTP polling provider with a WebSocket provider. Before connecting, it requests a short-lived credential through Core `wp.apiFetch`, including its supported cookie/nonce refresh behavior. WordPress verifies `edit_post` for that post. The provider uses `y-partyserver` and reuses WordPress's bundled Yjs instance (via `wp.sync.Y`) to avoid duplicate library issues.
 
-3. The **Worker** uses [y-partyserver](https://github.com/y-sweet/y-partyserver) (built on [PartyServer](https://github.com/threepointone/partyserver)) to run a Yjs sync relay inside a Durable Object. Each post gets its own Durable Object instance, identified by a room name derived from the post type and ID. WebSocket Hibernation keeps idle rooms free.
+3. The **Worker** receives that credential in a WebSocket subprotocol rather than the URL, verifies it plus the exact editor Origin, site/blog namespace, and room, strips the credential header, then routes to [y-partyserver](https://github.com/cloudflare/partykit/tree/main/packages/y-partyserver). Each post gets its own Durable Object instance. A Durable Object alarm ends each connection at credential expiry so reconnection reauthorizes against WordPress.
+
+4. The Durable Object saves Yjs state to its storage and reloads it after eviction or restart. WordPress remains authoritative for saved post content. See [SECURITY.md](SECURITY.md) for the persistence/invalidation boundary and residual production risks.

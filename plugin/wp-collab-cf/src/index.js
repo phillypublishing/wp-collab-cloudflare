@@ -1,216 +1,108 @@
 import { addFilter } from '@wordpress/hooks';
-import * as encoding from 'lib0/encoding';
-import * as decoding from 'lib0/decoding';
-import * as awarenessProtocol from 'y-protocols/awareness';
-
-const MSG_SYNC = 0;
-const MSG_AWARENESS = 1;
-const SYNC_STEP1 = 0;
-const SYNC_STEP2 = 1;
-const SYNC_UPDATE = 2;
+import apiFetch from '@wordpress/api-fetch';
+import YProvider from 'y-partyserver/provider';
 
 const config = window.wpCollabCf || {};
 
-if ( config.wsUrl ) {
+function noOpProvider() {
+	return { destroy: () => {}, on: () => {} };
+}
+
+async function requestCredentials( objectType, objectId ) {
+	const credentials = await apiFetch( {
+		url: config.tokenUrl,
+		method: 'POST',
+		data: { objectType, objectId },
+	} );
+	if ( ! credentials.room || ! credentials.token ) {
+		throw new Error( 'Credential response is incomplete' );
+	}
+	return credentials;
+}
+
+class AuthenticatedWebSocket extends globalThis.WebSocket {
+	constructor( address, protocols = [] ) {
+		const url = new URL( address );
+		const token = url.searchParams.get( 'token' );
+		if ( ! token ) {
+			throw new Error( 'WebSocket credential is missing' );
+		}
+		url.searchParams.delete( 'token' );
+		const requestedProtocols = Array.isArray( protocols )
+			? protocols
+			: [ protocols ];
+		super( url, [
+			...requestedProtocols,
+			'wp-collab-v1',
+			`wp-collab-token.${ token }`,
+		] );
+	}
+}
+
+if ( config.wsUrl && config.tokenUrl ) {
 	addFilter(
 		'sync.providers',
 		'wp-collab-cf/websocket-provider',
 		() => {
 			return [
 				async ( { objectType, objectId, ydoc, awareness } ) => {
-					// Grab Yjs from wp-sync's public exports.
 					const Y = window.wp?.sync?.Y;
 					if ( ! Y ) {
 						// eslint-disable-next-line no-console
-						console.error( 'WP Collab CF: wp.sync.Y not found — wp-sync may not be loaded.' );
-						return { destroy: () => {}, on: () => {} };
-					}
-
-					const room = `${ objectType.replace( /\//g, '-' ) }-${
-						objectId ?? 'collection'
-					}`;
-					const wsUrl = `${ config.wsUrl }/parties/collaboration/${ room }`;
-
-					let ws;
-					let connected = false;
-					let destroyed = false;
-					const statusCallbacks = [];
-
-					function sendMsg( buf ) {
-						if ( ws && ws.readyState === WebSocket.OPEN ) {
-							ws.send( buf );
-						}
-					}
-
-					// -- Sync protocol helpers --
-
-					function sendSyncStep1() {
-						const enc = encoding.createEncoder();
-						encoding.writeVarUint( enc, MSG_SYNC );
-						encoding.writeVarUint( enc, SYNC_STEP1 );
-						encoding.writeVarUint8Array(
-							enc,
-							Y.encodeStateVector( ydoc )
+						console.error(
+							'WP Collab CF: wp.sync.Y not found — wp-sync may not be loaded.'
 						);
-						sendMsg( encoding.toUint8Array( enc ) );
+						return noOpProvider();
 					}
 
-					function sendSyncStep2( sv ) {
-						const enc = encoding.createEncoder();
-						encoding.writeVarUint( enc, MSG_SYNC );
-						encoding.writeVarUint( enc, SYNC_STEP2 );
-						encoding.writeVarUint8Array(
-							enc,
-							Y.encodeStateAsUpdate( ydoc, sv )
+					if (
+						! /^postType\/[a-z0-9_-]+$/.test( objectType ) ||
+						! /^[1-9]\d*$/.test( String( objectId ) )
+					) {
+						// Secure collection/entity authorization needs a distinct
+						// capability model. Do not request credentials for an object
+						// this version deliberately does not authorize.
+						return noOpProvider();
+					}
+
+					let nextCredentials;
+					try {
+						nextCredentials = await requestCredentials(
+							objectType,
+							objectId
 						);
-						sendMsg( encoding.toUint8Array( enc ) );
-					}
-
-					function sendUpdate( update ) {
-						const enc = encoding.createEncoder();
-						encoding.writeVarUint( enc, MSG_SYNC );
-						encoding.writeVarUint( enc, SYNC_UPDATE );
-						encoding.writeVarUint8Array( enc, update );
-						sendMsg( encoding.toUint8Array( enc ) );
-					}
-
-					function handleSyncMessage( dec ) {
-						const syncType = decoding.readVarUint( dec );
-						switch ( syncType ) {
-							case SYNC_STEP1: {
-								const sv = decoding.readVarUint8Array( dec );
-								sendSyncStep2( sv );
-								break;
-							}
-							case SYNC_STEP2:
-							case SYNC_UPDATE: {
-								const update = decoding.readVarUint8Array( dec );
-								Y.applyUpdate( ydoc, update, 'ws-provider' );
-								break;
-							}
-						}
-					}
-
-					// -- Awareness --
-
-					function sendAwareness( changedClients ) {
-						const enc = encoding.createEncoder();
-						encoding.writeVarUint( enc, MSG_AWARENESS );
-						encoding.writeVarUint8Array(
-							enc,
-							awarenessProtocol.encodeAwarenessUpdate(
-								awareness,
-								changedClients
-							)
+					} catch ( error ) {
+						// eslint-disable-next-line no-console
+						console.error(
+							'WP Collab CF: unable to authorize WebSocket connection.',
+							error
 						);
-						sendMsg( encoding.toUint8Array( enc ) );
+						return noOpProvider();
 					}
 
-					// -- Doc & awareness event handlers --
-
-					const onDocUpdate = ( update, origin ) => {
-						if ( origin !== 'ws-provider' ) {
-							sendUpdate( update );
-						}
-					};
-
-					const onAwarenessUpdate = ( { added, updated, removed } ) => {
-						const changed = added.concat( updated, removed );
-						sendAwareness( changed );
-					};
-
-					ydoc.on( 'update', onDocUpdate );
-					if ( awareness ) {
-						awareness.on( 'update', onAwarenessUpdate );
-					}
-
-					// -- WebSocket connection --
-
-					function connect() {
-						if ( destroyed ) {
-							return;
-						}
-						ws = new WebSocket( wsUrl );
-						ws.binaryType = 'arraybuffer';
-
-						ws.addEventListener( 'open', () => {
-							connected = true;
-							statusCallbacks.forEach( ( cb ) =>
-								cb( { status: 'connected' } )
-							);
-							sendSyncStep1();
-							if ( awareness ) {
-								sendAwareness( [
-									awareness.clientID,
-								] );
-							}
-						} );
-
-						ws.addEventListener( 'message', ( event ) => {
-							const data = new Uint8Array( event.data );
-							const dec = decoding.createDecoder( data );
-							const msgType = decoding.readVarUint( dec );
-
-							switch ( msgType ) {
-								case MSG_SYNC:
-									handleSyncMessage( dec );
-									break;
-								case MSG_AWARENESS:
-									if ( awareness ) {
-										const update =
-											decoding.readVarUint8Array( dec );
-										awarenessProtocol.applyAwarenessUpdate(
-											awareness,
-											update,
-											'ws-provider'
-										);
-									}
-									break;
-							}
-						} );
-
-						ws.addEventListener( 'close', () => {
-							connected = false;
-							statusCallbacks.forEach( ( cb ) =>
-								cb( { status: 'disconnected' } )
-							);
-							if ( ! destroyed ) {
-								setTimeout( connect, 2000 );
-							}
-						} );
-
-						ws.addEventListener( 'error', () => {
-							ws.close();
-						} );
-					}
-
-					connect();
-
-					return {
-						destroy: () => {
-							destroyed = true;
-							ydoc.off( 'update', onDocUpdate );
-							if ( awareness ) {
-								awareness.off( 'update', onAwarenessUpdate );
-								awarenessProtocol.removeAwarenessStates(
-									awareness,
-									[ awareness.clientID ],
-									'provider-destroy'
+					const room = nextCredentials.room;
+					const endpoint = new URL( config.wsUrl );
+					return new YProvider( endpoint.host, room, ydoc, {
+						party: 'collaboration',
+						protocol: endpoint.protocol.replace( ':', '' ),
+						awareness,
+						WebSocketPolyfill: AuthenticatedWebSocket,
+						params: async () => {
+							const credentials =
+								nextCredentials ||
+								( await requestCredentials(
+									objectType,
+									objectId
+								) );
+							nextCredentials = undefined;
+							if ( credentials.room !== room ) {
+								throw new Error(
+									'Credential room changed during reconnect'
 								);
 							}
-							if ( ws ) {
-								ws.close();
-							}
+							return { token: credentials.token };
 						},
-						on: ( event, callback ) => {
-							if ( event === 'status' ) {
-								statusCallbacks.push( callback );
-								if ( connected ) {
-									callback( { status: 'connected' } );
-								}
-							}
-						},
-					};
+					} );
 				},
 			];
 		}

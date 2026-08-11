@@ -1,13 +1,16 @@
 {
   "name": "wp-collab-cloudflare-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "build": "wp-scripts build",
     "start": "wp-scripts start"
   },
   "dependencies": {
-    "y-websocket": "^2.1.0"
+    "@wordpress/api-fetch": "^7.52.0",
+    "partyserver": "^0.4.0",
+    "y-partyserver": "2.1.4",
+    "yjs": "^13.6.14"
   },
   "devDependencies": {
     "@wordpress/scripts": "^30.0.0"
