@@ -1,9 +1,23 @@
 {
+  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "wp-collab-cloudflare",
   // Set via CLOUDFLARE_ACCOUNT_ID env var or `wrangler login`
   // "account_id": "",
   "main": "src/index.ts",
   "compatibility_date": "2025-04-01",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "vars": {
+    "COLLAB_MAX_CONNECTIONS_PER_ROOM": "20",
+    "COLLAB_MAX_MESSAGE_BYTES": "1048576",
+    "COLLAB_MAX_UPDATE_BYTES": "524288",
+    "COLLAB_MAX_DOCUMENT_BYTES": "1500000",
+    "COLLAB_RATE_WINDOW_SECONDS": "10",
+    "COLLAB_MAX_MESSAGES_PER_WINDOW": "200",
+    "COLLAB_MAX_BYTES_PER_WINDOW": "4194304"
+  },
   "durable_objects": {
     "bindings": [
       {
@@ -17,5 +31,57 @@
       "tag": "v1",
       "new_sqlite_classes": ["Collaboration"]
     }
-  ]
+  ],
+  "env": {
+    "staging": {
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "Collaboration",
+            "class_name": "Collaboration"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": ["Collaboration"]
+        }
+      ],
+      "vars": {
+        "COLLAB_MAX_CONNECTIONS_PER_ROOM": "20",
+        "COLLAB_MAX_MESSAGE_BYTES": "1048576",
+        "COLLAB_MAX_UPDATE_BYTES": "524288",
+        "COLLAB_MAX_DOCUMENT_BYTES": "1500000",
+        "COLLAB_RATE_WINDOW_SECONDS": "10",
+        "COLLAB_MAX_MESSAGES_PER_WINDOW": "200",
+        "COLLAB_MAX_BYTES_PER_WINDOW": "4194304"
+      }
+    },
+    "production": {
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "Collaboration",
+            "class_name": "Collaboration"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": ["Collaboration"]
+        }
+      ],
+      "vars": {
+        "COLLAB_MAX_CONNECTIONS_PER_ROOM": "20",
+        "COLLAB_MAX_MESSAGE_BYTES": "1048576",
+        "COLLAB_MAX_UPDATE_BYTES": "524288",
+        "COLLAB_MAX_DOCUMENT_BYTES": "1500000",
+        "COLLAB_RATE_WINDOW_SECONDS": "10",
+        "COLLAB_MAX_MESSAGES_PER_WINDOW": "200",
+        "COLLAB_MAX_BYTES_PER_WINDOW": "4194304"
+      }
+    }
+  }
 }

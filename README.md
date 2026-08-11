@@ -42,10 +42,17 @@ openssl rand -hex 32 # use as the signing secret
 ```
 
 The same values are configured in WordPress below. Configure the Worker's
-secret as a JSON object so one Worker can recognize distinct site keys:
+secret as a JSON object so one Worker can recognize distinct site keys. The
+legacy single-key format remains supported:
 
 ```json
 {"YOUR_SITE_ID":"YOUR_SIGNING_SECRET"}
+```
+
+New installations should use a named key so later rotations can overlap:
+
+```json
+{"YOUR_SITE_ID":{"keys":{"2026-08":"YOUR_SIGNING_SECRET"}}}
 ```
 
 ### 2. Deploy the Worker
@@ -56,10 +63,14 @@ npm install
 # Authenticate with Cloudflare (or set CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN)
 wrangler login
 wrangler secret put COLLAB_AUTH_KEYS
-wrangler deploy
+npm run check
+npm run deploy:staging
 ```
 
-Note the deployed URL (e.g. `wss://wp-collab-cloudflare.your-subdomain.workers.dev`).
+Promote the same verified commit with `npm run deploy:production` only after
+the staging checks in [the production runbook](docs/production-runbook.md).
+Note the deployed URL (for example,
+`wss://wp-collab-cloudflare-staging.your-subdomain.workers.dev`).
 
 ### 3. Configure WordPress
 
@@ -69,6 +80,7 @@ Copy the [mu-plugin](mu-plugin/wp-collab-cf-config.php) to `wp-content/mu-plugin
 define( 'WP_COLLAB_CF_WS_URL', 'wss://wp-collab-cloudflare.your-subdomain.workers.dev' );
 define( 'WP_COLLAB_CF_SITE_ID', 'YOUR_SITE_ID' );
 define( 'WP_COLLAB_CF_AUTH_SECRET', 'YOUR_SIGNING_SECRET' );
+define( 'WP_COLLAB_CF_AUTH_KEY_ID', '2026-08' ); // For named keys only.
 ```
 
 ### 4. Install the Plugin
@@ -117,3 +129,8 @@ Or via option: `wp option update wp_collab_cf_demo_post_id 123`
 3. The **Worker** receives that credential in a WebSocket subprotocol rather than the URL, verifies it plus the exact editor Origin, site/blog namespace, and room, strips the credential header, then routes to [y-partyserver](https://github.com/cloudflare/partykit/tree/main/packages/y-partyserver). Each post gets its own Durable Object instance. A Durable Object alarm ends each connection at credential expiry so reconnection reauthorizes against WordPress.
 
 4. The Durable Object saves Yjs state to its storage and reloads it after eviction or restart. WordPress remains authoritative for saved post content. See [SECURITY.md](SECURITY.md) for the persistence/invalidation boundary and residual production risks.
+
+The Worker also applies fail-closed per-room connection, frame, Yjs update,
+merged-document, and per-connection rate limits. Checked-in defaults and
+environment-specific deployment procedures are documented in the
+[production runbook](docs/production-runbook.md).

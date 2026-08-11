@@ -5,9 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
     "test": "node --test test/**/*.test.mjs",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "check:deploy": "wrangler deploy --dry-run --env staging --outdir .wrangler-dist/staging && wrangler deploy --dry-run --env production --outdir .wrangler-dist/production",
+    "check": "npm test && npm run typecheck && npm run check:deploy && npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
     "partyserver": "^0.4.0",

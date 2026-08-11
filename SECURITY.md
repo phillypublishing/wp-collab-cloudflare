@@ -58,7 +58,9 @@ capability model. There is no insecure compatibility flag.
 - A stolen credential can be replayed from a non-browser client until it
   expires; Origin is defense in depth, not proof of browser identity.
 - A compromised WordPress installation or HMAC key can mint grants for that
-  installation. Rotate the key and update the Worker keyring together.
+  installation. The keyring supports named overlapping keys plus an explicit
+  legacy bridge; follow the staged rotation procedure rather than replacing a
+  live key in one step.
 - Snapshot saves are debounced (250 ms, at most 1 second), leaving a small
   crash-loss window. Storage failures are logged by `y-partyserver` but do not
   block live editing.
@@ -66,12 +68,17 @@ capability model. There is no insecure compatibility flag.
   Do not enable request-header logging or copy `Sec-WebSocket-Protocol` into
   custom logs. The Worker strips it before Durable Object forwarding, but
   account-level log/trace products must also be configured to redact it.
-- A corrupt stored Yjs update currently makes room loading fail. It is not
+- A corrupt or over-limit stored Yjs update makes room loading fail. It is not
   discarded automatically because silent reset could lose unpublished work;
   recovery requires an explicit operator-reviewed storage reset. A versioned
   quarantine/reset workflow remains production work.
-- Durable Object values and Worker WebSocket messages have platform size
-  limits. Application-level message, room-size, connection, and rate limits
-  remain future production-hardening work.
-- The HMAC keyring supports multiple installations but not overlapping keys
-  for one installation during rotation.
+- The Worker enforces configurable connection, message, Yjs update,
+  merged-document, message-rate, and byte-rate limits below Cloudflare's
+  platform ceilings. These defaults still require representative load tests
+  and alert thresholds before production.
+
+The [production runbook](docs/production-runbook.md) records the rollout,
+rotation, log-redaction, rollback, and state-recovery procedures plus release
+blockers. In particular, the project still needs an explicit license,
+revision-aware generation/invalidation semantics, authenticated operator
+recovery tooling, and an approved retention policy.
