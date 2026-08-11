@@ -14,6 +14,7 @@ defined( 'ABSPATH' ) || exit;
  *   define( 'WP_COLLAB_CF_WS_URL', 'wss://wp-collab-cloudflare.YOUR-SUBDOMAIN.workers.dev' );
  *   define( 'WP_COLLAB_CF_SITE_ID', 'YOUR_STABLE_SITE_ID' );
  *   define( 'WP_COLLAB_CF_AUTH_SECRET', 'YOUR_RANDOM_32_PLUS_CHARACTER_SECRET' );
+ *   define( 'WP_COLLAB_CF_AUTH_KEY_ID', '2026-08' ); // Optional during keyed rotation.
  */
 
 add_action( 'admin_enqueue_scripts', 'wp_collab_cf_enqueue_scripts' );
@@ -29,6 +30,12 @@ function wp_collab_cf_is_configured() {
 		? wp_parse_url( WP_COLLAB_CF_WS_URL, PHP_URL_SCHEME )
 		: false;
 
+	$key_id_valid = ! defined( 'WP_COLLAB_CF_AUTH_KEY_ID' )
+		|| (
+			is_string( WP_COLLAB_CF_AUTH_KEY_ID )
+			&& preg_match( '/^[A-Za-z0-9_-]{1,32}$/', WP_COLLAB_CF_AUTH_KEY_ID )
+		);
+
 	return defined( 'WP_COLLAB_CF_WS_URL' )
 		&& defined( 'WP_COLLAB_CF_SITE_ID' )
 		&& defined( 'WP_COLLAB_CF_AUTH_SECRET' )
@@ -37,7 +44,8 @@ function wp_collab_cf_is_configured() {
 		&& is_string( WP_COLLAB_CF_AUTH_SECRET )
 		&& in_array( $worker_scheme, array( 'ws', 'wss' ), true )
 		&& preg_match( '/^[A-Za-z0-9_-]{16,64}$/', WP_COLLAB_CF_SITE_ID )
-		&& preg_match( '/^[A-Za-z0-9_-]{32,128}$/', WP_COLLAB_CF_AUTH_SECRET );
+		&& preg_match( '/^[A-Za-z0-9_-]{32,128}$/', WP_COLLAB_CF_AUTH_SECRET )
+		&& $key_id_valid;
 }
 
 /**
@@ -161,6 +169,9 @@ function wp_collab_cf_issue_credentials( $object_type, $object_id ) {
 		'nbf'    => $issued_at - 5,
 		'exp'    => $issued_at + $ttl,
 	);
+	if ( defined( 'WP_COLLAB_CF_AUTH_KEY_ID' ) ) {
+		$claims['kid'] = WP_COLLAB_CF_AUTH_KEY_ID;
+	}
 	$json      = wp_json_encode( $claims, JSON_UNESCAPED_SLASHES );
 	if ( false === $json ) {
 		return new WP_Error( 'wp_collab_cf_token_error', 'The collaboration credential could not be created.', array( 'status' => 500 ) );

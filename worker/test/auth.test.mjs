@@ -84,6 +84,25 @@ test("parseAuthKeys accepts a site-specific keyring", () => {
   assert.equal(keys[site], secret);
 });
 
+test("parseAuthKeys accepts overlapping keyed credentials with a legacy bridge", () => {
+  const nextSecret = `${secret}00`;
+  const keys = parseAuthKeys(
+    JSON.stringify({
+      [site]: {
+        legacy: secret,
+        keys: {
+          "2026-08": nextSecret,
+          "2026-07": secret,
+        },
+      },
+    })
+  );
+
+  assert.equal(Object.getPrototypeOf(keys[site].keys), null);
+  assert.equal(keys[site].legacy, secret);
+  assert.equal(keys[site].keys["2026-08"], nextSecret);
+});
+
 test("parseAuthKeys rejects malformed or weak keyrings", () => {
   assert.throws(() => parseAuthKeys("not-json"), /valid JSON/u);
   assert.throws(
@@ -93,6 +112,24 @@ test("parseAuthKeys rejects malformed or weak keyrings", () => {
   assert.throws(
     () => parseAuthKeys(JSON.stringify({ "../site": secret })),
     /site identifier/u
+  );
+  assert.throws(
+    () =>
+      parseAuthKeys(
+        JSON.stringify({ [site]: { keys: { "../key": secret } } })
+      ),
+    /key identifier/u
+  );
+  assert.throws(
+    () => parseAuthKeys(JSON.stringify({ [site]: { keys: {} } })),
+    /at least one verification key/u
+  );
+  assert.throws(
+    () =>
+      parseAuthKeys(
+        JSON.stringify({ [site]: { keys: { current: secret }, extra: true } })
+      ),
+    /unsupported property/u
   );
 });
 
@@ -108,6 +145,74 @@ test("accepts a valid room-scoped credential from the matching Origin", async ()
   assert.equal(claims.site, site);
   assert.equal(claims.room, room);
   assert.equal(claims.sub, "7");
+});
+
+test("supports keyed rotation while retaining an explicit legacy bridge", async () => {
+  const nextSecret = `${secret}00`;
+  const authKeys = {
+    [site]: {
+      legacy: secret,
+      keys: {
+        "2026-08": nextSecret,
+        "2026-07": secret,
+      },
+    },
+  };
+
+  const keyedClaims = await verifyConnectionRequest({
+    request: makeRequest(
+      await mintToken({ kid: "2026-08" }, nextSecret)
+    ),
+    room,
+    authKeys,
+    nowSeconds,
+  });
+  assert.equal(keyedClaims.kid, "2026-08");
+
+  const legacyClaims = await verifyConnectionRequest({
+    request: makeRequest(await mintToken()),
+    room,
+    authKeys,
+    nowSeconds,
+  });
+  assert.equal(legacyClaims.kid, undefined);
+
+  await expectAuthError(
+    verifyConnectionRequest({
+      request: makeRequest(
+        await mintToken({ kid: "retired" }, nextSecret)
+      ),
+      room,
+      authKeys,
+      nowSeconds,
+    }),
+    401,
+    "unknown_key_id"
+  );
+
+  await expectAuthError(
+    verifyConnectionRequest({
+      request: makeRequest(await mintToken()),
+      room,
+      authKeys: { [site]: { keys: { "2026-08": nextSecret } } },
+      nowSeconds,
+    }),
+    401,
+    "missing_key_id"
+  );
+
+  await expectAuthError(
+    verifyConnectionRequest({
+      request: makeRequest(
+        await mintToken({ kid: "../invalid" }, nextSecret)
+      ),
+      room,
+      authKeys,
+      nowSeconds,
+    }),
+    401,
+    "invalid_claims"
+  );
 });
 
 test("normalizes an explicit default Origin port", async () => {

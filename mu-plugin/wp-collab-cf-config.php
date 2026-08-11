@@ -27,3 +27,9 @@ if ( ! defined( 'WP_COLLAB_CF_SITE_ID' ) ) {
 if ( ! defined( 'WP_COLLAB_CF_AUTH_SECRET' ) ) {
 	define( 'WP_COLLAB_CF_AUTH_SECRET', 'REPLACE_WITH_A_RANDOM_32_PLUS_CHARACTER_SECRET' );
 }
+
+// Optional. Set this when COLLAB_AUTH_KEYS uses a named key for this site.
+// Keep the old key in the Worker keyring until every old credential expires.
+// if ( ! defined( 'WP_COLLAB_CF_AUTH_KEY_ID' ) ) {
+// 	define( 'WP_COLLAB_CF_AUTH_KEY_ID', '2026-08' );
+// }

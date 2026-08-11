@@ -10,6 +10,7 @@ export const AUTH_EXPIRY_HEADER = "X-WP-Collab-Auth-Expires";
 const SITE_PATTERN = /^[A-Za-z0-9_-]{16,64}$/u;
 const ROOM_PATTERN = /^v1\.([A-Za-z0-9_-]{16,64})\.([1-9][0-9]*)\.[A-Za-z0-9_-]{1,256}\.[A-Za-z0-9_-]{1,256}$/u;
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{32,128}$/u;
+const KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/u;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
@@ -30,7 +31,11 @@ export class AuthError extends Error {
  * Parse the site-specific HMAC keyring supplied through a Worker secret.
  *
  * @param {string | undefined} serialized
- * @returns {Record<string, string>}
+ * Legacy entries remain strings. Rotating entries use
+ * `{ legacy?: string, keys: { [keyId]: string } }`, allowing a deployment to
+ * accept old key-id-less credentials while WordPress switches to a named key.
+ *
+ * @returns {Record<string, string | { legacy?: string, keys: Record<string, string> }>}
  */
 export function parseAuthKeys(serialized) {
   let parsed;
@@ -49,21 +54,83 @@ export function parseAuthKeys(serialized) {
     throw new Error("COLLAB_AUTH_KEYS must contain between 1 and 100 sites");
   }
 
-  /** @type {Record<string, string>} */
+  /** @type {Record<string, string | { legacy?: string, keys: Record<string, string> }>} */
   const keys = Object.create(null);
-  for (const [site, secret] of entries) {
+  for (const [site, configuredKeys] of entries) {
     if (!SITE_PATTERN.test(site)) {
       throw new Error("COLLAB_AUTH_KEYS contains an invalid site identifier");
     }
-    if (typeof secret !== "string" || !SECRET_PATTERN.test(secret)) {
+
+    if (typeof configuredKeys === "string") {
+      assertValidSecret(configuredKeys);
+      keys[site] = configuredKeys;
+      continue;
+    }
+
+    if (!isRecord(configuredKeys)) {
       throw new Error(
         "COLLAB_AUTH_KEYS secrets must be 32-128 base64url characters (at least 32 characters)"
       );
     }
-    keys[site] = secret;
+    for (const property of Object.keys(configuredKeys)) {
+      if (property !== "legacy" && property !== "keys") {
+        throw new Error(
+          "COLLAB_AUTH_KEYS rotating entries contain an unsupported property"
+        );
+      }
+    }
+
+    if (!isRecord(configuredKeys.keys)) {
+      throw new Error(
+        "COLLAB_AUTH_KEYS rotating entries must contain verification keys"
+      );
+    }
+    const keyEntries = Object.entries(configuredKeys.keys);
+    if (keyEntries.length === 0 || keyEntries.length > 5) {
+      throw new Error(
+        "COLLAB_AUTH_KEYS rotating entries must contain at least one verification key and at most five"
+      );
+    }
+
+    /** @type {Record<string, string>} */
+    const keyedSecrets = Object.create(null);
+    for (const [keyId, secret] of keyEntries) {
+      if (!KEY_ID_PATTERN.test(keyId)) {
+        throw new Error("COLLAB_AUTH_KEYS contains an invalid key identifier");
+      }
+      keyedSecrets[keyId] = validatedSecret(secret);
+    }
+    const legacySecret =
+      configuredKeys.legacy === undefined
+        ? undefined
+        : validatedSecret(configuredKeys.legacy);
+    keys[site] = {
+      ...(legacySecret === undefined ? {} : { legacy: legacySecret }),
+      keys: keyedSecrets,
+    };
   }
 
   return keys;
+}
+
+/**
+ * @param {unknown} secret
+ */
+function assertValidSecret(secret) {
+  if (typeof secret !== "string" || !SECRET_PATTERN.test(secret)) {
+    throw new Error(
+      "COLLAB_AUTH_KEYS secrets must be 32-128 base64url characters (at least 32 characters)"
+    );
+  }
+}
+
+/**
+ * @param {unknown} secret
+ * @returns {string}
+ */
+function validatedSecret(secret) {
+  assertValidSecret(secret);
+  return /** @type {string} */ (secret);
 }
 
 /**
@@ -159,7 +226,10 @@ function canonicalOrigin(value) {
  * @param {{
  *   request: Request,
  *   room: string,
- *   authKeys: Record<string, string | Promise<CryptoKey>>,
+ *   authKeys: Record<string, string | CryptoKey | Promise<CryptoKey> | {
+ *     legacy?: string | CryptoKey | Promise<CryptoKey>,
+ *     keys: Record<string, string | CryptoKey | Promise<CryptoKey>>
+ *   }>,
  *   nowSeconds?: number
  * }} options
  * @returns {Promise<Record<string, unknown>>}
@@ -200,7 +270,37 @@ export async function verifyConnectionRequest({
   if (!Object.hasOwn(authKeys, claims.site)) {
     throw new AuthError(401, "unknown_site");
   }
-  const authKey = authKeys[claims.site];
+  const configuredKeys = authKeys[claims.site];
+  /** @type {string | undefined} */
+  let keyId;
+  if (Object.hasOwn(claims, "kid")) {
+    if (typeof claims.kid !== "string" || !KEY_ID_PATTERN.test(claims.kid)) {
+      throw new AuthError(401, "invalid_claims");
+    }
+    keyId = claims.kid;
+  }
+
+  let authKey;
+  if (
+    typeof configuredKeys === "string" ||
+    configuredKeys instanceof CryptoKey ||
+    configuredKeys instanceof Promise
+  ) {
+    if (keyId !== undefined) {
+      throw new AuthError(401, "unknown_key_id");
+    }
+    authKey = configuredKeys;
+  } else if (keyId !== undefined) {
+    if (!Object.hasOwn(configuredKeys.keys, keyId)) {
+      throw new AuthError(401, "unknown_key_id");
+    }
+    authKey = configuredKeys.keys[keyId];
+  } else {
+    if (configuredKeys.legacy === undefined) {
+      throw new AuthError(401, "missing_key_id");
+    }
+    authKey = configuredKeys.legacy;
+  }
 
   let signature;
   try {
@@ -208,16 +308,7 @@ export async function verifyConnectionRequest({
   } catch {
     throw new AuthError(401, "invalid_token");
   }
-  const key =
-    typeof authKey === "string"
-      ? await crypto.subtle.importKey(
-          "raw",
-          textEncoder.encode(authKey),
-          { name: "HMAC", hash: "SHA-256" },
-          false,
-          ["verify"]
-        )
-      : await authKey;
+  const key = await importVerificationKey(authKey);
   const validSignature = await crypto.subtle.verify(
     "HMAC",
     key,
@@ -274,6 +365,23 @@ export async function verifyConnectionRequest({
   }
 
   return claims;
+}
+
+/**
+ * @param {string | CryptoKey | Promise<CryptoKey>} authKey
+ * @returns {Promise<CryptoKey>}
+ */
+async function importVerificationKey(authKey) {
+  if (typeof authKey !== "string") {
+    return await authKey;
+  }
+  return await crypto.subtle.importKey(
+    "raw",
+    textEncoder.encode(authKey),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"]
+  );
 }
 
 /**
