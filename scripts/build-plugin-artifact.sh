@@ -12,15 +12,15 @@ if [[ "${PLUGIN_ARTIFACT_ALLOW_DIRTY:-0}" != 1 ]] &&
 	exit 1
 fi
 
-source_sha="${PLUGIN_ARTIFACT_SOURCE_SHA:-$(git -C "${repo_root}" rev-parse HEAD)}"
+source_sha="$(git -C "${repo_root}" rev-parse HEAD)"
 if [[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
-	echo 'PLUGIN_ARTIFACT_SOURCE_SHA must be a full lowercase Git SHA.' >&2
+	echo 'The checked-out source must resolve to a full lowercase Git SHA.' >&2
 	exit 1
 fi
 
-source_date_epoch="${SOURCE_DATE_EPOCH:-$(git -C "${repo_root}" show -s --format=%ct "${source_sha}")}"
+source_date_epoch="$(git -C "${repo_root}" show -s --format=%ct "${source_sha}")"
 if [[ ! "${source_date_epoch}" =~ ^[0-9]+$ ]]; then
-	echo 'SOURCE_DATE_EPOCH must be a non-negative integer.' >&2
+	echo 'The source commit timestamp must be a non-negative integer.' >&2
 	exit 1
 fi
 
@@ -70,6 +70,7 @@ artifact_path="${output_dir}/${artifact_name}"
 rm -f "${artifact_path}" "${artifact_path}.sha256"
 (
 	cd "${stage}"
+	export TZ=UTC
 	7z a -bd -bso0 -bsp0 -tzip -mx=9 -mta=off -mtc=off -mtm=off \
 		"${artifact_path}" "${entries[@]}"
 )
@@ -85,7 +86,7 @@ artifact_files_json="$({ printf '%s\n' "${entries[@]}"; } | node -e '
 	const files = fs.readFileSync( 0, "utf8" ).trimEnd().split( "\n" );
 	process.stdout.write( JSON.stringify( files ) );
 ')"
-repository="${GITHUB_REPOSITORY:-$(git -C "${repo_root}" remote get-url origin 2>/dev/null || printf 'local')}"
+repository="${GITHUB_REPOSITORY:-local}"
 ref_name="${GITHUB_REF_NAME:-$(git -C "${repo_root}" branch --show-current)}"
 SOURCE_SHA="${source_sha}" \
 	SOURCE_DATE_EPOCH="${source_date_epoch}" \

@@ -85,14 +85,16 @@ define( 'WP_COLLAB_CF_AUTH_KEY_ID', '2026-08' ); // For named keys only.
 
 ### 4. Install the Plugin
 
-Every plugin change builds a 30-day GitHub Actions artifact named
-`wp-collab-cf-<commit>`. It contains the installable ZIP, its SHA-256 checksum,
-and a provenance manifest. Download the artifact for the exact commit you want
-to test, verify the checksum, and upload the ZIP through **Plugins > Add Plugin
-> Upload Plugin**. The ZIP contains only the runtime PHP file and compiled
-JavaScript assets; source and Node dependencies are deliberately excluded.
+Every pushed ref state that changes the plugin builds a 30-day GitHub Actions
+artifact named `wp-collab-cf-<commit>`. It contains the installable ZIP, its
+SHA-256 checksum, and a provenance manifest. Download the artifact for the exact
+plugin source commit you want to test, verify the checksum, and upload the ZIP
+through **Plugins > Add Plugin > Upload Plugin**. The ZIP contains only the
+runtime PHP file and compiled JavaScript assets; source and Node dependencies
+are deliberately excluded.
 
-To produce the same allowlisted artifact locally from a clean checkout:
+To reproduce the allowlisted artifact locally from a clean checkout with the
+same packaging toolchain:
 
 ```bash
 cd wp-collab-cloudflare

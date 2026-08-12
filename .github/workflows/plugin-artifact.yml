@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: plugin-artifact-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -39,13 +39,21 @@ jobs:
         working-directory: plugin/wp-collab-cf
         run: npm test
 
+      - name: Audit production dependencies
+        working-directory: plugin/wp-collab-cf
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Lint plugin PHP
+        working-directory: plugin/wp-collab-cf
+        run: php -l wp-collab-cf.php
+
       - name: Build and verify reproducible artifact
         env:
-          PLUGIN_ARTIFACT_SOURCE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${GITHUB_SHA}")"
-          ./tests/plugin-artifact.test.sh "${RUNNER_TEMP}/plugin-artifact"
+          PLUGIN_ARTIFACT_ALLOW_DIRTY: 0
+        run: ./tests/plugin-artifact.test.sh "${RUNNER_TEMP}/plugin-artifact"
+
+      - name: Lint generated plugin metadata
+        run: php -l plugin/wp-collab-cf/build/index.asset.php
 
       - name: Upload plugin artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

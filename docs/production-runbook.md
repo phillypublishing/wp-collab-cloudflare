@@ -81,6 +81,7 @@ uses code `4001` and remains reconnectable so a fresh credential can be minted.
    The checked-in staging environment publishes one stable `workers.dev`
    route and disables per-version preview URLs. This keeps the Origin and
    operator validation surface unambiguous.
+
 5. Confirm `https://<staging-worker>/` returns `status: ok`. Configure a
    staging WordPress site with the matching site ID, secret, Worker WSS URL,
    and `WP_COLLAB_CF_AUTH_KEY_ID` when using a named key.
@@ -93,8 +94,9 @@ uses code `4001` and remains reconnectable so a fresh credential can be minted.
 
 The WordPress operator can run the independent
 [staging-site checklist](staging-site-validation.md) without Cloudflare or
-server-shell access. Use the CI-built plugin ZIP for the exact deployed commit
-rather than copying a mutable source checkout.
+server-shell access. Use the CI-built plugin ZIP for the exact commit containing
+the approved plugin source rather than copying a mutable source checkout. Record
+that plugin commit separately when the deployed Worker uses a later commit.
 
 Production uses the same sequence with `--env production`. Deployment is a
 manual, separately authorized action; CI only builds a dry-run bundle.

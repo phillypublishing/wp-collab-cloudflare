@@ -7,8 +7,10 @@ developer tools.
 
 ## Install the exact plugin artifact
 
-1. Open the successful **WordPress plugin artifact** run for the approved
-   commit and download its `wp-collab-cf-<commit>` artifact.
+1. Open the successful **WordPress plugin artifact** run for the exact commit
+   containing the plugin source you approved and download its
+   `wp-collab-cf-<commit>` artifact. A later Worker-only deployment may use a
+   different commit; record both commits separately.
 2. Extract the Actions artifact locally. Verify the ZIP beside its checksum:
 
    ```bash
@@ -26,7 +28,9 @@ developer tools.
    - `WP_COLLAB_CF_WS_URL`
    - `WP_COLLAB_CF_SITE_ID`
    - `WP_COLLAB_CF_AUTH_SECRET`
-   - `WP_COLLAB_CF_AUTH_KEY_ID`
+
+   Define `WP_COLLAB_CF_AUTH_KEY_ID` only when `COLLAB_AUTH_KEYS` uses a named
+   key. Leave it undefined for the supported legacy string entry.
 
    The site's canonical `admin_url()` origin must match the HTTPS origin seen
    in the browser. A proxy or domain mismatch is rejected deliberately.
