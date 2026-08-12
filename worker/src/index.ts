@@ -84,6 +84,20 @@ export class Collaboration extends YServer {
     this.documentBudgetBytes = Y.encodeStateAsUpdate(this.document).byteLength;
   }
 
+  private rejectForResourceLimit(
+    connection: Connection,
+    event: string,
+    observed?: number,
+    limit?: number
+  ): void {
+    logSecurityEvent(event, {
+      ...(observed === undefined ? {} : { observed }),
+      ...(limit === undefined ? {} : { limit }),
+    });
+    recordResourceLimit(this.metrics, event, observed, limit);
+    connection.close(RESOURCE_LIMIT_CLOSE_CODE, "Room resource limit exceeded");
+  }
+
   async onLoad(): Promise<void> {
     // Versions before the ephemeral-relay model stored document bytes here.
     // Delete that exact legacy value without touching alarms or hibernating
@@ -99,9 +113,8 @@ export class Collaboration extends YServer {
     for (const _connection of this.getConnections()) {
       connectionCount += 1;
       if (!hasConnectionCapacity(connectionCount, this.resourceLimits)) {
-        rejectForResourceLimit(
+        this.rejectForResourceLimit(
           connection,
-          this.metrics,
           "connection_limit_exceeded",
           connectionCount,
           this.resourceLimits.maxConnectionsPerRoom
@@ -118,9 +131,8 @@ export class Collaboration extends YServer {
         [AUTH_EXPIRY_STATE_KEY]: expiresAt,
       }))
     ) {
-      rejectForResourceLimit(
+      this.rejectForResourceLimit(
         connection,
-        this.metrics,
         "connection_state_limit_exceeded"
       );
       return;
@@ -151,9 +163,8 @@ export class Collaboration extends YServer {
 
     const byteLength = messageByteLength(message);
     if (byteLength > this.resourceLimits.maxMessageBytes) {
-      rejectForResourceLimit(
+      this.rejectForResourceLimit(
         connection,
-        this.metrics,
         "message_limit_exceeded",
         byteLength,
         this.resourceLimits.maxMessageBytes
@@ -166,16 +177,15 @@ export class Collaboration extends YServer {
       update = getYjsUpdate(message);
     } catch (error) {
       if (error instanceof ResourceLimitError) {
-        rejectForResourceLimit(connection, this.metrics, error.code);
+        this.rejectForResourceLimit(connection, error.code);
         return;
       }
       throw error;
     }
 
     if (update && update.byteLength > this.resourceLimits.maxUpdateBytes) {
-      rejectForResourceLimit(
+      this.rejectForResourceLimit(
         connection,
-        this.metrics,
         "update_limit_exceeded",
         update.byteLength,
         this.resourceLimits.maxUpdateBytes
@@ -194,17 +204,15 @@ export class Collaboration extends YServer {
         [RATE_STATE_KEY]: budget.state,
       }))
     ) {
-      rejectForResourceLimit(
+      this.rejectForResourceLimit(
         connection,
-        this.metrics,
         "connection_state_limit_exceeded"
       );
       return;
     }
     if (!budget.allowed) {
-      rejectForResourceLimit(
+      this.rejectForResourceLimit(
         connection,
-        this.metrics,
         budget.reason || "rate_limit_exceeded"
       );
       return;
@@ -220,9 +228,8 @@ export class Collaboration extends YServer {
           const current = Y.encodeStateAsUpdate(this.document);
           const merged = Y.mergeUpdates([current, update]);
           if (merged.byteLength > this.resourceLimits.maxDocumentBytes) {
-            rejectForResourceLimit(
+            this.rejectForResourceLimit(
               connection,
-              this.metrics,
               "document_limit_exceeded",
               merged.byteLength,
               this.resourceLimits.maxDocumentBytes
@@ -231,9 +238,8 @@ export class Collaboration extends YServer {
           }
           this.documentBudgetBytes = merged.byteLength;
         } catch {
-          rejectForResourceLimit(
+          this.rejectForResourceLimit(
             connection,
-            this.metrics,
             "malformed_yjs_update"
           );
           return;
@@ -372,21 +378,6 @@ function logSecurityEvent(
   // Never add request URLs, headers, room names, user IDs, or message content
   // here: this stream is intentionally safe for production log export.
   console.warn(JSON.stringify({ service: "wp-collab-cloudflare", event, ...fields }));
-}
-
-function rejectForResourceLimit(
-  connection: Connection,
-  metrics: AnalyticsEngineDataset | undefined,
-  event: string,
-  observed?: number,
-  limit?: number
-): void {
-  logSecurityEvent(event, {
-    ...(observed === undefined ? {} : { observed }),
-    ...(limit === undefined ? {} : { limit }),
-  });
-  recordResourceLimit(metrics, event, observed, limit);
-  connection.close(RESOURCE_LIMIT_CLOSE_CODE, "Room resource limit exceeded");
 }
 
 export default {

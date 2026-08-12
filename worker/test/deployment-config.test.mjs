@@ -12,22 +12,33 @@ test("staging setup writes the secret to the named Wrangler environment", async 
 });
 
 test("named deployments bind isolated Analytics Engine datasets", async () => {
-  const config = await readFile(
+  const source = await readFile(
     new URL("../wrangler.jsonc", import.meta.url),
     "utf8"
   );
+  const config = JSON.parse(source.replace(/^\s*\/\/.*$/gmu, ""));
 
-  assert.doesNotMatch(
-    config.slice(0, config.indexOf('"env"')),
-    /"analytics_engine_datasets"/u,
+  assert.equal(
+    config.analytics_engine_datasets,
+    undefined,
     "local development has no Analytics Engine binding"
   );
-  assert.match(
-    config,
-    /"staging"[\s\S]*?"analytics_engine_datasets"[\s\S]*?"binding":\s*"COLLAB_METRICS"[\s\S]*?"dataset":\s*"wp_collab_cloudflare_staging"/u
+  assert.deepEqual(
+    config.env.staging.analytics_engine_datasets,
+    [
+      {
+        binding: "COLLAB_METRICS",
+        dataset: "wp_collab_cloudflare_staging",
+      },
+    ]
   );
-  assert.match(
-    config,
-    /"production"[\s\S]*?"analytics_engine_datasets"[\s\S]*?"binding":\s*"COLLAB_METRICS"[\s\S]*?"dataset":\s*"wp_collab_cloudflare_production"/u
+  assert.deepEqual(
+    config.env.production.analytics_engine_datasets,
+    [
+      {
+        binding: "COLLAB_METRICS",
+        dataset: "wp_collab_cloudflare_production",
+      },
+    ]
   );
 });
