@@ -2,12 +2,6 @@ name: WordPress plugin artifact
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/plugin-artifact.yml'
-      - 'plugin/wp-collab-cf/**'
-      - 'scripts/build-plugin-artifact.sh'
-      - 'tests/plugin-artifact.test.sh'
   push:
     paths:
       - '.github/workflows/plugin-artifact.yml'
@@ -45,16 +39,13 @@ jobs:
         working-directory: plugin/wp-collab-cf
         run: npm test
 
-      - name: Build reproducible artifact
+      - name: Build and verify reproducible artifact
         env:
           PLUGIN_ARTIFACT_SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${GITHUB_SHA}")"
-          ./scripts/build-plugin-artifact.sh "${RUNNER_TEMP}/plugin-artifact"
-
-      - name: Verify artifact contract
-        run: ./tests/plugin-artifact.test.sh
+          ./tests/plugin-artifact.test.sh "${RUNNER_TEMP}/plugin-artifact"
 
       - name: Upload plugin artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

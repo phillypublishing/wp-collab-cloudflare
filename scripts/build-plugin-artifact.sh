@@ -32,7 +32,7 @@ if [[ -z "${version}" || ! "${version}" =~ ^[A-Za-z0-9._+-]+$ ]]; then
 	exit 1
 fi
 
-for command_name in npm 7z sha256sum node touch; do
+for command_name in npm 7z sha256sum node touch install dirname; do
 	if ! command -v "${command_name}" >/dev/null 2>&1; then
 		echo "Required packaging command is unavailable: ${command_name}" >&2
 		exit 1
@@ -49,21 +49,23 @@ trap 'rm -rf "${stage}"' EXIT
 	npm run build
 )
 
-install -d -m 0755 "${stage}/wp-collab-cf/build"
-install -m 0644 "${plugin_dir}/wp-collab-cf.php" "${stage}/wp-collab-cf/wp-collab-cf.php"
-install -m 0644 "${plugin_dir}/build/index.js" "${stage}/wp-collab-cf/build/index.js"
-install -m 0644 "${plugin_dir}/build/index.asset.php" "${stage}/wp-collab-cf/build/index.asset.php"
+entries=(
+	wp-collab-cf/build/index.asset.php
+	wp-collab-cf/build/index.js
+	wp-collab-cf/wp-collab-cf.php
+)
+for entry in "${entries[@]}"; do
+	source_path="${plugin_dir}/${entry#wp-collab-cf/}"
+	destination_path="${stage}/${entry}"
+	install -d -m 0755 "$(dirname "${destination_path}")"
+	install -m 0644 "${source_path}" "${destination_path}"
+done
 
 find "${stage}" -exec touch -d "@${source_date_epoch}" {} +
 
 short_sha="${source_sha:0:12}"
 artifact_name="wp-collab-cf-${version}-${short_sha}.zip"
 artifact_path="${output_dir}/${artifact_name}"
-entries=(
-	wp-collab-cf/build/index.asset.php
-	wp-collab-cf/build/index.js
-	wp-collab-cf/wp-collab-cf.php
-)
 
 rm -f "${artifact_path}" "${artifact_path}.sha256"
 (
@@ -77,7 +79,12 @@ rm -f "${artifact_path}" "${artifact_path}.sha256"
 	sha256sum "${artifact_name}" > "${artifact_name}.sha256"
 )
 
-artifact_sha256="$(sha256sum "${artifact_path}" | cut -d ' ' -f 1)"
+read -r artifact_sha256 _ < "${artifact_path}.sha256"
+artifact_files_json="$({ printf '%s\n' "${entries[@]}"; } | node -e '
+	const fs = require( "node:fs" );
+	const files = fs.readFileSync( 0, "utf8" ).trimEnd().split( "\n" );
+	process.stdout.write( JSON.stringify( files ) );
+')"
 repository="${GITHUB_REPOSITORY:-$(git -C "${repo_root}" remote get-url origin 2>/dev/null || printf 'local')}"
 ref_name="${GITHUB_REF_NAME:-$(git -C "${repo_root}" branch --show-current)}"
 SOURCE_SHA="${source_sha}" \
@@ -85,6 +92,7 @@ SOURCE_SHA="${source_sha}" \
 	PLUGIN_VERSION="${version}" \
 	ARTIFACT_NAME="${artifact_name}" \
 	ARTIFACT_SHA256="${artifact_sha256}" \
+	ARTIFACT_FILES_JSON="${artifact_files_json}" \
 	SOURCE_REPOSITORY="${repository}" \
 	SOURCE_REF="${ref_name}" \
 	MANIFEST_PATH="${output_dir}/plugin-artifact-manifest.json" \
@@ -102,11 +110,7 @@ const manifest = {
 	builtAt: new Date(
 		Number.parseInt( process.env.SOURCE_DATE_EPOCH, 10 ) * 1000
 	).toISOString(),
-	files: [
-		'wp-collab-cf/wp-collab-cf.php',
-		'wp-collab-cf/build/index.js',
-		'wp-collab-cf/build/index.asset.php',
-	],
+	files: JSON.parse( process.env.ARTIFACT_FILES_JSON ),
 };
 
 fs.writeFileSync(

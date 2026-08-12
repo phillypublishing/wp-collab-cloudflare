@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+const wranglerConfig = readFile(
+  new URL("../wrangler.jsonc", import.meta.url),
+  "utf8"
+).then((source) => JSON.parse(source.replace(/^\s*\/\/.*$/gmu, "")));
+
 test("staging setup writes the secret to the named Wrangler environment", async () => {
   const readme = await readFile(new URL("../../README.md", import.meta.url), "utf8");
 
@@ -12,11 +17,7 @@ test("staging setup writes the secret to the named Wrangler environment", async 
 });
 
 test("named deployments bind isolated Analytics Engine datasets", async () => {
-  const source = await readFile(
-    new URL("../wrangler.jsonc", import.meta.url),
-    "utf8"
-  );
-  const config = JSON.parse(source.replace(/^\s*\/\/.*$/gmu, ""));
+  const config = await wranglerConfig;
 
   assert.equal(
     config.analytics_engine_datasets,
@@ -44,11 +45,7 @@ test("named deployments bind isolated Analytics Engine datasets", async () => {
 });
 
 test("staging publishes one stable workers.dev route without preview aliases", async () => {
-  const source = await readFile(
-    new URL("../wrangler.jsonc", import.meta.url),
-    "utf8"
-  );
-  const config = JSON.parse(source.replace(/^\s*\/\/.*$/gmu, ""));
+  const config = await wranglerConfig;
 
   assert.equal(config.env.staging.workers_dev, true);
   assert.equal(config.env.staging.preview_urls, false);
