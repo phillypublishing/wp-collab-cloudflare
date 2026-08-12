@@ -124,9 +124,9 @@ Or via option: `wp option update wp_collab_cf_demo_post_id 123`
 
 1. The **mu-plugin** defines `WP_ALLOW_COLLABORATION` (enabling RTC) and `WP_COLLAB_CF_WS_URL` (the relay endpoint).
 
-2. The **plugin** uses the [`sync.providers`](https://developer.wordpress.org/reference/hooks/sync-providers/) filter to replace WordPress's default HTTP polling provider with a WebSocket provider. Before connecting, it requests a short-lived credential through Core `wp.apiFetch`, including its supported cookie/nonce refresh behavior. WordPress verifies `edit_post` for that post. The provider uses `y-partyserver` and reuses WordPress's bundled Yjs instance (via `wp.sync.Y`) to avoid duplicate library issues.
+2. The **plugin** uses the [`sync.providers`](https://developer.wordpress.org/reference/hooks/sync-providers/) filter to replace WordPress's default HTTP polling provider with a WebSocket provider. Before connecting, it requests a short-lived credential through Core `wp.apiFetch`, including its supported cookie/nonce refresh behavior. WordPress verifies `edit_post` for a post. Collection requests keep Gutenberg's native `objectId: null`, require the HTTP sync server's minimum `edit_posts` capability, and use `WP_Sync_Config` plus the `wp_collab_cf_collection_sync_permission` extension filter. The provider uses `y-partyserver` and reuses WordPress's bundled Yjs instance (via `wp.sync.Y`) to avoid duplicate library issues.
 
-3. The **Worker** receives that credential in a WebSocket subprotocol rather than the URL, verifies it plus the exact editor Origin, site/blog namespace, and room, strips the credential header, then routes to [y-partyserver](https://github.com/cloudflare/partykit/tree/main/packages/y-partyserver). Each post gets its own Durable Object instance. A Durable Object alarm ends each connection at credential expiry so reconnection reauthorizes against WordPress.
+3. The **Worker** receives that credential in a WebSocket subprotocol rather than the URL, verifies it plus the exact editor Origin, site/blog namespace, and room, strips the credential header, then routes to [y-partyserver](https://github.com/cloudflare/partykit/tree/main/packages/y-partyserver). Each authorized room gets its own Durable Object instance. A Durable Object alarm ends each connection at credential expiry so reconnection reauthorizes against WordPress.
 
 4. The Durable Object keeps Yjs state in memory only. Gutenberg persists its
    CRDT snapshot in WordPress post meta, and connected clients re-sync the room
@@ -135,6 +135,13 @@ Or via option: `wp option update wp_collab_cf_demo_post_id 123`
    [SECURITY.md](SECURITY.md) for the persistence boundary and residual risks.
    This matches the relay/persistence split in Automattic's
    [VIP RTC reference](https://github.com/Automattic/vip-real-time-collaboration).
+
+Collection rooms carry Gutenberg's lightweight save/invalidation Yjs state,
+not the REST records themselves. WordPress converts the null object ID to the
+internal `collection` room sentinel only after authorization. Bounded
+`kind/name` collection shapes can reach the permission filter so custom
+Gutenberg entities are extensible; unknown kinds are denied by default.
+Non-collection support remains restricted to positive-ID post entities.
 
 The Worker also applies fail-closed per-room connection, frame, Yjs update,
 in-memory merged-document, and per-connection rate limits. Checked-in defaults and

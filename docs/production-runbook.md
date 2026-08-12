@@ -16,6 +16,12 @@ test environment.
 - Select an edge abuse-control policy for unauthenticated upgrade attempts.
   Per-connection limits begin after a credential reaches its room and do not
   replace Cloudflare WAF/rate-limiting controls on the public Worker route.
+- Bound collection credential issuance and room cardinality. Core authorizes
+  `root` and `taxonomy` collections by kind rather than validating every entity
+  name, so an `edit_posts` user can mint many distinct rooms and spread traffic
+  across per-room limits. Choose and test an issuance rate limit, a
+  registered-entity policy, or both without removing the documented custom
+  collection extension seam.
 
 ## Environment model
 
@@ -222,6 +228,13 @@ Durable Object instance is live, and connected clients re-sync it after
 hibernation. Once no client can provide state and the Worker restarts or the
 instance is evicted, the relay starts empty. Gutenberg then loads the durable
 CRDT snapshot and current entity values from WordPress.
+
+This applies equally to collection rooms. Their Yjs document carries only a
+lightweight invalidation signal; authoritative records remain in WordPress and
+are refetched through REST. Restart verification seeds a uniquely named
+synthetic collection room and proves its relay-only state is not restored. The
+global `root/comment` room is unsuitable for that destructive restart check
+because an unrelated open editor could reconnect and rehydrate the probe.
 
 The `onLoad()` hook deletes the exact legacy `yjs-state-v1` key used by earlier
 versions. This cleans active historical rooms without touching alarms or

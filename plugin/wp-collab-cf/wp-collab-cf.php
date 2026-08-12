@@ -89,9 +89,9 @@ function wp_collab_cf_site_origin() {
 /**
  * Validate a collaboration object and return its namespaced room identifier.
  *
- * The initial secure transport supports post entities only. Failing closed for
- * unknown object types prevents a token endpoint from accidentally granting
- * access to entities that do not share WordPress's edit_post capability model.
+ * Collections use Gutenberg's null object identifier at the provider and REST
+ * boundaries. The literal "collection" sentinel is internal room-shape data;
+ * clients cannot use it to bypass single-entity validation.
  *
  * @param string $object_type Sync object type, for example postType/post.
  * @param mixed  $object_id   Sync object identifier.
@@ -102,17 +102,59 @@ function wp_collab_cf_room_for_object( $object_type, $object_id ) {
 		return new WP_Error( 'wp_collab_cf_invalid_object', 'This collaboration object is not supported.', array( 'status' => 400 ) );
 	}
 
-	if ( ! preg_match( '/^postType\/([a-z0-9_-]+)$/', $object_type, $matches ) ) {
+	if ( ! preg_match( '/^([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)$/', $object_type, $matches ) ) {
 		return new WP_Error( 'wp_collab_cf_invalid_object', 'This collaboration object is not supported.', array( 'status' => 400 ) );
 	}
 
-	if ( ! is_numeric( $object_id ) || (string) (int) $object_id !== (string) $object_id || (int) $object_id < 1 ) {
-		return new WP_Error( 'wp_collab_cf_invalid_object', 'This collaboration object is not supported.', array( 'status' => 400 ) );
-	}
+	$entity_kind = $matches[1];
+	$entity_name = $matches[2];
+	if ( null === $object_id ) {
+		if (
+			! current_user_can( 'edit_posts' ) ||
+			! is_callable( array( 'WP_Sync_Config', 'can_user_sync_entity_type' ) )
+		) {
+			return new WP_Error( 'wp_collab_cf_forbidden_object', 'You cannot collaborate on this object.', array( 'status' => 403 ) );
+		}
 
-	$post = get_post( (int) $object_id );
-	if ( ! $post || $post->post_type !== $matches[1] || ! current_user_can( 'edit_post', $post->ID ) ) {
-		return new WP_Error( 'wp_collab_cf_forbidden_object', 'You cannot collaborate on this object.', array( 'status' => 403 ) );
+		$can_sync = WP_Sync_Config::can_user_sync_entity_type( $entity_kind, $entity_name, null );
+		/**
+		 * Filters whether the current user may receive a collection-room credential.
+		 *
+		 * Authentication and the Gutenberg HTTP sync server's minimum `edit_posts`
+		 * capability are enforced before this filter. The initial value comes from
+		 * Gutenberg's WP_Sync_Config permission model.
+		 *
+		 * @param bool   $can_sync    Whether Gutenberg permits the collection.
+		 * @param string $entity_kind Gutenberg entity kind.
+		 * @param string $entity_name Gutenberg entity name.
+		 * @param null   $object_id   Null for collection rooms.
+		 */
+		$can_sync = (bool) apply_filters(
+			'wp_collab_cf_collection_sync_permission',
+			$can_sync,
+			$entity_kind,
+			$entity_name,
+			null
+		);
+		if ( ! $can_sync ) {
+			return new WP_Error( 'wp_collab_cf_forbidden_object', 'You cannot collaborate on this object.', array( 'status' => 403 ) );
+		}
+
+		$room_object_id = 'collection';
+	} else {
+		if ( 'postType' !== $entity_kind ) {
+			return new WP_Error( 'wp_collab_cf_invalid_object', 'This collaboration object is not supported.', array( 'status' => 400 ) );
+		}
+
+		if ( ! is_numeric( $object_id ) || (string) (int) $object_id !== (string) $object_id || (int) $object_id < 1 ) {
+			return new WP_Error( 'wp_collab_cf_invalid_object', 'This collaboration object is not supported.', array( 'status' => 400 ) );
+		}
+
+		$post = get_post( (int) $object_id );
+		if ( ! $post || $post->post_type !== $entity_name || ! current_user_can( 'edit_post', $post->ID ) ) {
+			return new WP_Error( 'wp_collab_cf_forbidden_object', 'You cannot collaborate on this object.', array( 'status' => 403 ) );
+		}
+		$room_object_id = (string) $post->ID;
 	}
 
 	return implode(
@@ -122,7 +164,7 @@ function wp_collab_cf_room_for_object( $object_type, $object_id ) {
 			WP_COLLAB_CF_SITE_ID,
 			(string) get_current_blog_id(),
 			wp_collab_cf_base64url_encode( $object_type ),
-			wp_collab_cf_base64url_encode( (string) $post->ID ),
+			wp_collab_cf_base64url_encode( $room_object_id ),
 		)
 	);
 }
@@ -206,8 +248,7 @@ function wp_collab_cf_register_rest_routes() {
 					'type'     => 'string',
 				),
 				'objectId'   => array(
-					'required' => true,
-					'type'     => 'integer',
+					'type'     => array( 'integer', 'null' ),
 					'minimum'  => 1,
 				),
 			),
@@ -226,6 +267,14 @@ function wp_collab_cf_register_rest_routes() {
  * @return WP_REST_Response|WP_Error
  */
 function wp_collab_cf_rest_issue_credentials( WP_REST_Request $request ) {
+	$json_params = $request->get_json_params();
+	if (
+		null === $request->get_param( 'objectId' ) &&
+		( ! is_array( $json_params ) || ! array_key_exists( 'objectId', $json_params ) )
+	) {
+		return new WP_Error( 'wp_collab_cf_invalid_object', 'This collaboration object is not supported.', array( 'status' => 400 ) );
+	}
+
 	$credentials = wp_collab_cf_issue_credentials(
 		$request->get_param( 'objectType' ),
 		$request->get_param( 'objectId' )

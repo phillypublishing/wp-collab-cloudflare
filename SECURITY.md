@@ -17,9 +17,11 @@ authenticated application service, not as a public WebSocket relay.
 The browser requests a credential from `wp-collab-cf/v1/token` through Core's
 `wp.apiFetch`, which supplies the normal WordPress login cookie and REST nonce
 and refreshes an expired nonce using WordPress's supported flow. WordPress
-verifies `edit_post` for the specific post and returns a 30-300 second HMAC
+verifies `edit_post` for a specific post, or Gutenberg's collection sync
+permission behind an `edit_posts` minimum, and returns a 30-300 second HMAC
 credential (60 seconds by default). It is scoped to the user, installation,
-multisite blog, editor Origin, object type/ID, and exact Durable Object room.
+multisite blog, editor Origin, object type/ID (or internal `collection`
+sentinel), and exact Durable Object room.
 
 The Worker verifies the HMAC, audience, timestamps, known installation key,
 exact signed Origin, and exact room before PartyServer allocates or joins a
@@ -49,12 +51,27 @@ editor session hydrates from WordPress instead of Worker storage. Consequently,
 revision restores and out-of-band WordPress changes follow Gutenberg's own CRDT
 reconciliation rather than competing with a second durable snapshot.
 
+## Collection authorization
+
+The browser sends an actual JSON null for a Gutenberg collection. It cannot
+submit `collection` as an object ID; that sentinel exists only inside the
+signed room name. Collection types accept a bounded, slash-safe `kind/name`
+shape so custom Gutenberg entities can reach WordPress authorization. The
+default decision comes from `WP_Sync_Config`, which covers Core postType,
+root, and taxonomy collections and denies unknown kinds. Sites can opt a
+custom kind in, or narrow Core's result, with
+`wp_collab_cf_collection_sync_permission`. That filter receives the proposed
+boolean, entity kind, entity name, and null object ID. It always runs after
+authentication and the minimum `edit_posts` capability, so it cannot create an
+anonymous or subscriber-accessible room.
+
 ## Deliberate compatibility break
 
 Version 0.2 rejects the old unauthenticated room URLs. It supports secured
-`postType/<post-type>` objects with a positive post ID and fails closed for
-collection or unknown entity rooms because they need their own WordPress
-capability model. There is no insecure compatibility flag.
+`postType/<post-type>` objects with a positive post ID and authorized
+collections using an internal `collection` sentinel. Unsupported
+non-collection entities still fail closed. There is no insecure compatibility
+flag.
 
 ## Residual risks
 
@@ -75,6 +92,13 @@ capability model. There is no insecure compatibility flag.
   merged-document, message-rate, and byte-rate limits below Cloudflare's
   platform ceilings. These defaults still require representative load tests
   and alert thresholds before production.
+- Core's collection permission is kind-level for `root` and `taxonomy`; it does
+  not prove each requested entity name is registered. An authenticated user
+  with `edit_posts` can therefore request many distinct collection rooms and
+  distribute load across per-room limits. Before public deployment, bound
+  credential issuance and room cardinality with rate limiting, a
+  registered-entity policy, or both. Local development deliberately preserves
+  Core/VIP-style custom collection extensibility.
 
 The [production runbook](docs/production-runbook.md) records the rollout,
 rotation, log-redaction, rollback, and remaining release blockers. In

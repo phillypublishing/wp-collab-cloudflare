@@ -3,6 +3,7 @@ import apiFetch from '@wordpress/api-fetch';
 import YProvider from 'y-partyserver/provider';
 
 import { handleConnectionClose } from './connection-policy.mjs';
+import { isSupportedSyncObject } from './sync-object-policy.mjs';
 
 const config = window.wpCollabCf || {};
 
@@ -57,13 +58,9 @@ if ( config.wsUrl && config.tokenUrl ) {
 						return noOpProvider();
 					}
 
-					if (
-						! /^postType\/[a-z0-9_-]+$/.test( objectType ) ||
-						! /^[1-9]\d*$/.test( String( objectId ) )
-					) {
-						// Secure collection/entity authorization needs a distinct
-						// capability model. Do not request credentials for an object
-						// this version deliberately does not authorize.
+					if ( ! isSupportedSyncObject( objectType, objectId ) ) {
+						// WordPress performs authoritative permission checks. Skip
+						// malformed types and entity shapes that it will never grant.
 						return noOpProvider();
 					}
 
