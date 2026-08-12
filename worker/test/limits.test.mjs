@@ -35,8 +35,8 @@ test("parseResourceLimits supplies bounded production defaults", () => {
   const limits = parseResourceLimits({});
 
   assert.equal(limits.maxConnectionsPerRoom, 20);
-  assert.equal(limits.maxMessageBytes, 1_048_576);
-  assert.equal(limits.maxUpdateBytes, 524_288);
+  assert.equal(limits.maxMessageBytes, 1_572_864);
+  assert.equal(limits.maxUpdateBytes, 1_500_000);
   assert.equal(limits.maxDocumentBytes, 1_500_000);
   assert.equal(limits.rateWindowMilliseconds, 10_000);
   assert.equal(limits.maxMessagesPerWindow, 200);
@@ -46,16 +46,16 @@ test("parseResourceLimits supplies bounded production defaults", () => {
 test("parseResourceLimits accepts safe overrides and rejects ambiguous values", () => {
   const limits = parseResourceLimits({
     COLLAB_MAX_CONNECTIONS_PER_ROOM: "8",
-    COLLAB_MAX_MESSAGE_BYTES: "65536",
-    COLLAB_MAX_UPDATE_BYTES: "32768",
-    COLLAB_MAX_DOCUMENT_BYTES: "1000000",
+    COLLAB_MAX_MESSAGE_BYTES: "131072",
+    COLLAB_MAX_UPDATE_BYTES: "65536",
+    COLLAB_MAX_DOCUMENT_BYTES: "65536",
     COLLAB_RATE_WINDOW_SECONDS: "5",
     COLLAB_MAX_MESSAGES_PER_WINDOW: "50",
     COLLAB_MAX_BYTES_PER_WINDOW: "2000000",
   });
   assert.equal(limits.maxConnectionsPerRoom, 8);
-  assert.equal(limits.maxMessageBytes, 65_536);
-  assert.equal(limits.maxUpdateBytes, 32_768);
+  assert.equal(limits.maxMessageBytes, 131_072);
+  assert.equal(limits.maxUpdateBytes, 65_536);
   assert.equal(limits.rateWindowMilliseconds, 5_000);
 
   assert.throws(
@@ -80,10 +80,19 @@ test("parseResourceLimits accepts safe overrides and rejects ambiguous values", 
   assert.throws(
     () =>
       parseResourceLimits({
-        COLLAB_MAX_UPDATE_BYTES: "65537",
+        COLLAB_MAX_UPDATE_BYTES: "65536",
+        COLLAB_MAX_DOCUMENT_BYTES: "65537",
+      }),
+    /must equal COLLAB_MAX_DOCUMENT_BYTES/u
+  );
+  assert.throws(
+    () =>
+      parseResourceLimits({
+        COLLAB_MAX_MESSAGE_BYTES: "65536",
+        COLLAB_MAX_UPDATE_BYTES: "65536",
         COLLAB_MAX_DOCUMENT_BYTES: "65536",
       }),
-    /cannot exceed COLLAB_MAX_DOCUMENT_BYTES/u
+    /must allow Yjs framing/u
   );
 });
 

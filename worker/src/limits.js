@@ -2,8 +2,8 @@
 
 const DEFAULT_LIMITS = Object.freeze({
   maxConnectionsPerRoom: 20,
-  maxMessageBytes: 1_048_576,
-  maxUpdateBytes: 524_288,
+  maxMessageBytes: 1_572_864,
+  maxUpdateBytes: 1_500_000,
   maxDocumentBytes: 1_500_000,
   rateWindowMilliseconds: 10_000,
   maxMessagesPerWindow: 200,
@@ -19,6 +19,11 @@ const LIMIT_DEFINITIONS = Object.freeze({
   COLLAB_MAX_MESSAGES_PER_WINDOW: [10, 2_000],
   COLLAB_MAX_BYTES_PER_WINDOW: [65_536, 32_000_000],
 });
+
+// Two one-byte protocol tags plus the parser's maximum eight-byte varuint
+// length field. Keeping the frame limit above the document limit ensures an
+// accepted WordPress snapshot can hydrate an empty relay.
+const MAX_YJS_SYNC_FRAME_OVERHEAD_BYTES = 10;
 
 /**
  * @typedef {{
@@ -90,9 +95,17 @@ export function parseResourceLimits(env) {
       "COLLAB_MAX_UPDATE_BYTES cannot exceed COLLAB_MAX_MESSAGE_BYTES"
     );
   }
-  if (maxUpdateBytes > maxDocumentBytes) {
+  if (
+    maxMessageBytes <
+    maxDocumentBytes + MAX_YJS_SYNC_FRAME_OVERHEAD_BYTES
+  ) {
     throw new Error(
-      "COLLAB_MAX_UPDATE_BYTES cannot exceed COLLAB_MAX_DOCUMENT_BYTES"
+      "COLLAB_MAX_MESSAGE_BYTES must allow Yjs framing above COLLAB_MAX_DOCUMENT_BYTES"
+    );
+  }
+  if (maxUpdateBytes !== maxDocumentBytes) {
+    throw new Error(
+      "COLLAB_MAX_UPDATE_BYTES must equal COLLAB_MAX_DOCUMENT_BYTES for ephemeral relay hydration"
     );
   }
   if (maxBytesPerWindow < maxMessageBytes) {

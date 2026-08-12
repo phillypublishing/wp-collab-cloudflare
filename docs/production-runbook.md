@@ -29,12 +29,16 @@ The application limits are public Wrangler variables:
 | Variable | Default | Meaning |
 | --- | ---: | --- |
 | `COLLAB_MAX_CONNECTIONS_PER_ROOM` | 20 | Accepted WebSockets in one room, including the new candidate |
-| `COLLAB_MAX_MESSAGE_BYTES` | 1,048,576 | Maximum WebSocket frame payload |
-| `COLLAB_MAX_UPDATE_BYTES` | 524,288 | Maximum Yjs sync step-two/update payload |
+| `COLLAB_MAX_MESSAGE_BYTES` | 1,572,864 | Maximum WebSocket frame payload, including protocol overhead |
+| `COLLAB_MAX_UPDATE_BYTES` | 1,500,000 | Maximum Yjs sync step-two/update payload; keep equal to the document limit so WordPress can hydrate an empty relay |
 | `COLLAB_MAX_DOCUMENT_BYTES` | 1,500,000 | Maximum compact merged Yjs update held in memory for a room |
 | `COLLAB_RATE_WINDOW_SECONDS` | 10 | Fixed per-connection rate window |
 | `COLLAB_MAX_MESSAGES_PER_WINDOW` | 200 | Frames per connection per window |
 | `COLLAB_MAX_BYTES_PER_WINDOW` | 4,194,304 | Aggregate bytes per connection per window |
+
+`COLLAB_MAX_UPDATE_BYTES` must equal `COLLAB_MAX_DOCUMENT_BYTES`, and
+`COLLAB_MAX_MESSAGE_BYTES` must leave room for the Yjs sync frame around that
+document. Invalid combinations fail closed at Worker startup.
 
 Invalid or contradictory values return a generic `503` before routing. A
 limit violation closes only the offending connection with application close

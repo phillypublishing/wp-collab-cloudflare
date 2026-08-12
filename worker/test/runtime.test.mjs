@@ -34,14 +34,55 @@ function createRuntime(persistPath, limitOverrides = {}) {
     bindings: {
       COLLAB_AUTH_KEYS: JSON.stringify({ [site]: secret }),
       COLLAB_MAX_CONNECTIONS_PER_ROOM: "20",
-      COLLAB_MAX_MESSAGE_BYTES: "1048576",
-      COLLAB_MAX_UPDATE_BYTES: "524288",
+      COLLAB_MAX_MESSAGE_BYTES: "1572864",
+      COLLAB_MAX_UPDATE_BYTES: "1500000",
       COLLAB_MAX_DOCUMENT_BYTES: "1500000",
       COLLAB_RATE_WINDOW_SECONDS: "10",
       COLLAB_MAX_MESSAGES_PER_WINDOW: "200",
       COLLAB_MAX_BYTES_PER_WINDOW: "4194304",
       ...limitOverrides,
     },
+    log: new NoOpLog(),
+  });
+}
+
+function createLegacyStorageFixtureRuntime(persistPath) {
+  return new Miniflare({
+    modules: true,
+    script: `
+      export class Collaboration {
+        constructor(ctx) {
+          this.ctx = ctx;
+        }
+
+        async alarm() {}
+
+        async fetch(request) {
+          const path = new URL(request.url).pathname;
+          if (path === "/seed") {
+            await this.ctx.storage.put("yjs-state-v1", new Uint8Array([1, 2, 3]));
+            await this.ctx.storage.put("lifecycle-marker", "preserved");
+            await this.ctx.storage.setAlarm(Date.now() + 60_000);
+            return new Response("seeded");
+          }
+          if (path === "/inspect") {
+            return Response.json({
+              hasLegacyState: (await this.ctx.storage.get("yjs-state-v1")) !== undefined,
+              hasLifecycleAlarm: (await this.ctx.storage.getAlarm()) !== null,
+              lifecycleMarker: await this.ctx.storage.get("lifecycle-marker"),
+            });
+          }
+          return new Response("Not found", { status: 404 });
+        }
+      }
+
+      export default { fetch() { return new Response("ok"); } };
+    `,
+    compatibilityDate: "2025-04-01",
+    durableObjects: {
+      Collaboration: { className: "Collaboration", useSQLite: true },
+    },
+    durableObjectsPersist: persistPath,
     log: new NoOpLog(),
   });
 }
@@ -245,4 +286,66 @@ test("workerd does not retain Yjs state after a runtime restart", async (t) => {
   emptyDocument.destroy();
   restored.destroy();
   await closeSocket(reader.socket, reader.close);
+});
+
+test("workerd accepts a WordPress-sized snapshot into an empty relay", async (t) => {
+  const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-hydrate-"));
+  const runtime = createRuntime(persistPath);
+  t.after(async () => {
+    await runtime.dispose();
+    await rm(persistPath, { recursive: true, force: true });
+  });
+
+  const writer = await connect(runtime);
+  const source = new Y.Doc();
+  source.getText("content").insert(0, "x".repeat(600_000));
+  const snapshot = Y.encodeStateAsUpdate(source);
+  assert.ok(snapshot.byteLength > 524_288);
+  assert.ok(snapshot.byteLength <= 1_500_000);
+  writer.socket.send(syncMessage(2, snapshot));
+
+  const reader = await connect(runtime);
+  const updatePromise = waitForSyncUpdate(reader.socket);
+  const readerState = new Y.Doc();
+  reader.socket.send(syncMessage(0, Y.encodeStateVector(readerState)));
+  Y.applyUpdate(readerState, await updatePromise);
+  assert.equal(readerState.getText("content").length, 600_000);
+
+  source.destroy();
+  readerState.destroy();
+  await closeSocket(reader.socket, reader.close);
+  await closeSocket(writer.socket, writer.close);
+});
+
+test("workerd scrubs legacy Yjs storage when a room activates", async (t) => {
+  const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-legacy-"));
+  let runtime = createLegacyStorageFixtureRuntime(persistPath);
+  t.after(async () => {
+    await runtime.dispose();
+    await rm(persistPath, { recursive: true, force: true });
+  });
+
+  let namespace = await runtime.getDurableObjectNamespace("Collaboration");
+  let response = await namespace
+    .get(namespace.idFromName(room))
+    .fetch("http://durable-object/seed");
+  assert.equal(response.status, 200);
+  await runtime.dispose();
+
+  runtime = createRuntime(persistPath);
+  const reader = await connect(runtime);
+  await closeSocket(reader.socket, reader.close);
+  await runtime.dispose();
+
+  runtime = createLegacyStorageFixtureRuntime(persistPath);
+  namespace = await runtime.getDurableObjectNamespace("Collaboration");
+  response = await namespace
+    .get(namespace.idFromName(room))
+    .fetch("http://durable-object/inspect");
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    hasLegacyState: false,
+    hasLifecycleAlarm: true,
+    lifecycleMarker: "preserved",
+  });
 });
