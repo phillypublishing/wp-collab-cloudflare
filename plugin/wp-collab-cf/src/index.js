@@ -2,7 +2,10 @@ import { addFilter } from '@wordpress/hooks';
 import apiFetch from '@wordpress/api-fetch';
 import YProvider from 'y-partyserver/provider';
 
-import { handleConnectionClose } from './connection-policy.mjs';
+import {
+	createProviderStatusBridge,
+	handleConnectionClose,
+} from './connection-policy.mjs';
 import { isSupportedSyncObject } from './sync-object-policy.mjs';
 
 const config = window.wpCollabCf || {};
@@ -116,6 +119,7 @@ if ( config.wsUrl && config.tokenUrl ) {
 								);
 						} );
 					} );
+					const statusBridge = createProviderStatusBridge( provider );
 					provider.connect().catch( ( error ) => {
 						// eslint-disable-next-line no-console
 						console.error(
@@ -123,7 +127,7 @@ if ( config.wsUrl && config.tokenUrl ) {
 							error
 						);
 					} );
-					return provider;
+					return statusBridge;
 				},
 			];
 		}
