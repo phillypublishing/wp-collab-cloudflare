@@ -7,7 +7,7 @@
     "dev": "wrangler dev",
     "deploy:staging": "wrangler deploy --env staging",
     "deploy:production": "wrangler deploy --env production",
-    "test": "node --test test/auth.test.mjs test/deployment-config.test.mjs test/ephemeral-relay.test.mjs test/limits.test.mjs",
+    "test": "node --test test/auth.test.mjs test/deployment-config.test.mjs test/ephemeral-relay.test.mjs test/limits.test.mjs test/observability.test.mjs",
     "test:runtime": "wrangler deploy --dry-run --env staging --outdir .wrangler-dist/runtime-test && node --test test/runtime.test.mjs",
     "typecheck": "tsc",
     "check:deploy": "wrangler deploy --dry-run --env staging --outdir .wrangler-dist/staging && wrangler deploy --dry-run --env production --outdir .wrangler-dist/production",

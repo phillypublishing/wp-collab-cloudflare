@@ -122,8 +122,85 @@ The Worker emits JSON events containing only the service name, event code,
 status, observed size, and configured limit. It deliberately excludes URLs,
 headers, room names, user IDs, origins, credential claims, and message content.
 
-Alert on sustained `configuration_invalid`, `auth_unavailable`, and bursts of
-connection/message/update/rate-limit events. Dashboard request logs,
+Named staging and production deployments also bind isolated Workers Analytics
+Engine datasets named `wp_collab_cloudflare_staging` and
+`wp_collab_cloudflare_production`. Local development has no analytics binding.
+Metrics are best-effort: a missing binding or failed write cannot alter an auth
+decision, WebSocket upgrade, or resource-limit close.
+
+The dataset schema is intentionally count-only and closed to request-derived
+labels:
+
+| Column | Meaning |
+| --- | --- |
+| `index1` | Constant sampling key `wp-collab-cloudflare` |
+| `blob1` | Allowlisted event: `configuration_invalid`, `connection_accepted`, `connection_rejected`, or `resource_limit` |
+| `blob2` | Allowlisted status or rejection/limit code |
+| `double1` | Event count, always `1` |
+| `double2` | Non-negative observed byte/connection count when applicable, otherwise `0` |
+| `double3` | Non-negative configured limit when applicable, otherwise `0` |
+
+No metric contains a URL, room, site, blog, user, token, origin, header,
+document content, or raw request value. Keep this schema closed; use `unknown`
+for a newly encountered code until it has been reviewed and explicitly added.
+
+After a staging deployment has produced data, use an Account Analytics Read
+token with Cloudflare's Analytics Engine SQL API. This dashboard query shows
+sample-aware five-minute event counts:
+
+```sql
+SELECT
+  toStartOfInterval(timestamp, INTERVAL '5' MINUTE) AS bucket,
+  blob1 AS event,
+  blob2 AS status,
+  SUM(_sample_interval * double1) AS event_count
+FROM wp_collab_cloudflare_staging
+WHERE timestamp > NOW() - INTERVAL '1' DAY
+GROUP BY bucket, event, status
+ORDER BY bucket ASC, event ASC, status ASC
+```
+
+This query supports a resource-pressure panel without adding room labels:
+
+```sql
+SELECT
+  blob2 AS limit_code,
+  SUM(_sample_interval * double1) AS event_count,
+  MAX(double2) AS max_observed,
+  MAX(double3) AS configured_limit
+FROM wp_collab_cloudflare_staging
+WHERE timestamp > NOW() - INTERVAL '1' HOUR
+  AND blob1 = 'resource_limit'
+GROUP BY limit_code
+ORDER BY event_count DESC
+```
+
+Start with two deterministic alert signals: any `configuration_invalid` or
+`auth_unavailable` event in five minutes. For resource and ordinary auth-reject
+bursts, establish a staging baseline before selecting a threshold; do not copy
+an arbitrary production threshold into this proof of concept. Replace the
+dataset name with `wp_collab_cloudflare_production` only after the production
+deployment gate is approved. These bindings, queries, and alert candidates are
+configuration and runbook work only; no Cloudflare deployment or live dataset
+write has been validated in this repository.
+
+```sql
+SELECT
+  blob1 AS event,
+  blob2 AS status,
+  SUM(_sample_interval * double1) AS event_count
+FROM wp_collab_cloudflare_staging
+WHERE timestamp > NOW() - INTERVAL '5' MINUTE
+  AND (
+    blob1 = 'configuration_invalid'
+    OR blob2 = 'auth_unavailable'
+  )
+GROUP BY event, status
+HAVING event_count > 0
+```
+
+Use the baseline to add burst alerts for connection/message/update/rate-limit
+events. Dashboard request logs,
 Logpush, traces, proxies, and SIEM pipelines must not record
 `Sec-WebSocket-Protocol`: it temporarily contains the bearer credential at the
 edge even though the Worker strips it before Durable Object routing. Keep log
@@ -170,3 +247,5 @@ account operation if complete historical erasure is required.
 - [Durable Object environments](https://developers.cloudflare.com/durable-objects/reference/environments/)
 - [Durable Object limits](https://developers.cloudflare.com/durable-objects/platform/limits/)
 - [Durable Object known issues](https://developers.cloudflare.com/durable-objects/platform/known-issues/)
+- [Workers Analytics Engine setup](https://developers.cloudflare.com/analytics/analytics-engine/get-started/)
+- [Workers Analytics Engine SQL API](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/)

@@ -23,6 +23,12 @@ import {
   ResourceLimitError,
   trySetConnectionState,
 } from "./limits.js";
+import {
+  recordConfigurationInvalid,
+  recordConnectionAccepted,
+  recordConnectionRejected,
+  recordResourceLimit,
+} from "./observability.js";
 
 const AUTH_EXPIRY_STATE_KEY = "__wpCollabAuthExpires";
 const RATE_STATE_KEY = "__wpCollabRateWindow";
@@ -42,6 +48,7 @@ type ResourceLimits = ReturnType<typeof parseResourceLimits>;
 interface Env {
   Collaboration: DurableObjectNamespace<Collaboration>;
   COLLAB_AUTH_KEYS: string;
+  COLLAB_METRICS?: AnalyticsEngineDataset;
   COLLAB_MAX_CONNECTIONS_PER_ROOM?: string;
   COLLAB_MAX_MESSAGE_BYTES?: string;
   COLLAB_MAX_UPDATE_BYTES?: string;
@@ -67,11 +74,13 @@ export class Collaboration extends YServer {
   };
 
   private readonly resourceLimits: ResourceLimits;
+  private readonly metrics?: AnalyticsEngineDataset;
   private documentBudgetBytes: number;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.resourceLimits = parseResourceLimits(env);
+    this.metrics = env.COLLAB_METRICS;
     this.documentBudgetBytes = Y.encodeStateAsUpdate(this.document).byteLength;
   }
 
@@ -92,6 +101,7 @@ export class Collaboration extends YServer {
       if (!hasConnectionCapacity(connectionCount, this.resourceLimits)) {
         rejectForResourceLimit(
           connection,
+          this.metrics,
           "connection_limit_exceeded",
           connectionCount,
           this.resourceLimits.maxConnectionsPerRoom
@@ -108,7 +118,11 @@ export class Collaboration extends YServer {
         [AUTH_EXPIRY_STATE_KEY]: expiresAt,
       }))
     ) {
-      rejectForResourceLimit(connection, "connection_state_limit_exceeded");
+      rejectForResourceLimit(
+        connection,
+        this.metrics,
+        "connection_state_limit_exceeded"
+      );
       return;
     }
 
@@ -139,6 +153,7 @@ export class Collaboration extends YServer {
     if (byteLength > this.resourceLimits.maxMessageBytes) {
       rejectForResourceLimit(
         connection,
+        this.metrics,
         "message_limit_exceeded",
         byteLength,
         this.resourceLimits.maxMessageBytes
@@ -151,7 +166,7 @@ export class Collaboration extends YServer {
       update = getYjsUpdate(message);
     } catch (error) {
       if (error instanceof ResourceLimitError) {
-        rejectForResourceLimit(connection, error.code);
+        rejectForResourceLimit(connection, this.metrics, error.code);
         return;
       }
       throw error;
@@ -160,6 +175,7 @@ export class Collaboration extends YServer {
     if (update && update.byteLength > this.resourceLimits.maxUpdateBytes) {
       rejectForResourceLimit(
         connection,
+        this.metrics,
         "update_limit_exceeded",
         update.byteLength,
         this.resourceLimits.maxUpdateBytes
@@ -178,12 +194,17 @@ export class Collaboration extends YServer {
         [RATE_STATE_KEY]: budget.state,
       }))
     ) {
-      rejectForResourceLimit(connection, "connection_state_limit_exceeded");
+      rejectForResourceLimit(
+        connection,
+        this.metrics,
+        "connection_state_limit_exceeded"
+      );
       return;
     }
     if (!budget.allowed) {
       rejectForResourceLimit(
         connection,
+        this.metrics,
         budget.reason || "rate_limit_exceeded"
       );
       return;
@@ -201,6 +222,7 @@ export class Collaboration extends YServer {
           if (merged.byteLength > this.resourceLimits.maxDocumentBytes) {
             rejectForResourceLimit(
               connection,
+              this.metrics,
               "document_limit_exceeded",
               merged.byteLength,
               this.resourceLimits.maxDocumentBytes
@@ -209,7 +231,11 @@ export class Collaboration extends YServer {
           }
           this.documentBudgetBytes = merged.byteLength;
         } catch {
-          rejectForResourceLimit(connection, "malformed_yjs_update");
+          rejectForResourceLimit(
+            connection,
+            this.metrics,
+            "malformed_yjs_update"
+          );
           return;
         }
       } else {
@@ -320,10 +346,14 @@ function getAuthKeys(env: Env): Record<string, ImportedSiteKeys> {
   return cachedAuthKeys;
 }
 
-function authFailure(error: unknown): Response {
+function authFailure(
+  error: unknown,
+  metrics?: AnalyticsEngineDataset
+): Response {
   const status = error instanceof AuthError ? error.status : 503;
   const code = error instanceof AuthError ? error.code : "auth_unavailable";
   logSecurityEvent("connection_rejected", { code, status });
+  recordConnectionRejected(metrics, code);
   return Response.json(
     { error: code },
     {
@@ -346,6 +376,7 @@ function logSecurityEvent(
 
 function rejectForResourceLimit(
   connection: Connection,
+  metrics: AnalyticsEngineDataset | undefined,
   event: string,
   observed?: number,
   limit?: number
@@ -354,6 +385,7 @@ function rejectForResourceLimit(
     ...(observed === undefined ? {} : { observed }),
     ...(limit === undefined ? {} : { limit }),
   });
+  recordResourceLimit(metrics, event, observed, limit);
   connection.close(RESOURCE_LIMIT_CLOSE_CODE, "Room resource limit exceeded");
 }
 
@@ -366,6 +398,7 @@ export default {
       getAuthKeys(env);
     } catch {
       logSecurityEvent("configuration_invalid");
+      recordConfigurationInvalid(env.COLLAB_METRICS);
       return Response.json(
         { status: "unavailable", service: "wp-collab-cloudflare" },
         { status: 503, headers: { "Cache-Control": "no-store" } }
@@ -402,13 +435,14 @@ export default {
               Number(claims.exp)
             );
           } catch (error) {
-            return authFailure(error);
+            return authFailure(error, env.COLLAB_METRICS);
           }
         },
       })
     );
     if (response) {
       if (response.status === 101 && response.webSocket) {
+        recordConnectionAccepted(env.COLLAB_METRICS);
         const headers = new Headers(response.headers);
         headers.set("Sec-WebSocket-Protocol", SAFE_PROTOCOL);
         return new Response(null, {
