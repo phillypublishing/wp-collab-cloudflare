@@ -19,7 +19,9 @@ import {
   hasConnectionCapacity,
   messageByteLength,
   parseResourceLimits,
+  restoreStoredDocumentState,
   ResourceLimitError,
+  trySetConnectionState,
 } from "./limits.js";
 
 const YJS_STATE_KEY = "yjs-state-v1";
@@ -37,6 +39,9 @@ type CollaborationConnectionState = Record<string, unknown> & {
   [RATE_STATE_KEY]?: RateState;
 };
 type ResourceLimits = ReturnType<typeof parseResourceLimits>;
+type StoredStateRefusal =
+  | "stored_document_limit_exceeded"
+  | "stored_document_corrupt";
 
 interface Env {
   Collaboration: DurableObjectNamespace<Collaboration>;
@@ -70,6 +75,7 @@ export class Collaboration extends YServer {
 
   private readonly resourceLimits: ResourceLimits;
   private documentBudgetBytes = 0;
+  private storedStateRefusal: StoredStateRefusal | undefined;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -79,19 +85,34 @@ export class Collaboration extends YServer {
   async onLoad(): Promise<void> {
     const state = await this.ctx.storage.get<ArrayBuffer>(YJS_STATE_KEY);
     if (state) {
-      if (state.byteLength > this.resourceLimits.maxDocumentBytes) {
-        logSecurityEvent("stored_document_limit_exceeded", {
-          observed: state.byteLength,
-          limit: this.resourceLimits.maxDocumentBytes,
+      const restored = restoreStoredDocumentState(
+        this.document,
+        state,
+        this.resourceLimits.maxDocumentBytes
+      );
+      if (!restored.ok) {
+        this.storedStateRefusal = restored.reason;
+        logSecurityEvent(restored.reason, {
+          observed: restored.observed,
+          ...(restored.reason === "stored_document_limit_exceeded"
+            ? { limit: restored.limit }
+            : {}),
         });
-        throw new Error("Stored collaboration state exceeds the configured limit");
+        this.closeConnectionsForStoredStateRefusal();
+        return;
       }
-      Y.applyUpdate(this.document, new Uint8Array(state));
+      this.documentBudgetBytes = restored.bytes;
+      return;
     }
     this.documentBudgetBytes = Y.encodeStateAsUpdate(this.document).byteLength;
   }
 
   async onSave(): Promise<void> {
+    if (this.storedStateRefusal) {
+      // Preserve the original value for operator review. A refused room never
+      // replaces its stored state with an empty or partially restored update.
+      return;
+    }
     const update = Y.encodeStateAsUpdate(this.document);
     if (update.byteLength > this.resourceLimits.maxDocumentBytes) {
       logSecurityEvent("document_limit_exceeded_during_save", {
@@ -112,6 +133,11 @@ export class Collaboration extends YServer {
     connection: Connection<CollaborationConnectionState>,
     context: ConnectionContext
   ): Promise<void> {
+    if (this.storedStateRefusal) {
+      connection.close(RESOURCE_LIMIT_CLOSE_CODE, "Room unavailable");
+      return;
+    }
+
     let connectionCount = 0;
     for (const _connection of this.getConnections()) {
       connectionCount += 1;
@@ -128,10 +154,15 @@ export class Collaboration extends YServer {
 
     const delay = getAuthExpiryDelay(context.request);
     const expiresAt = Number(context.request.headers.get(AUTH_EXPIRY_HEADER));
-    connection.setState((state) => ({
-      ...(state || {}),
-      [AUTH_EXPIRY_STATE_KEY]: expiresAt,
-    }));
+    if (
+      !trySetConnectionState(connection, (state) => ({
+        ...(state || {}),
+        [AUTH_EXPIRY_STATE_KEY]: expiresAt,
+      }))
+    ) {
+      rejectForResourceLimit(connection, "connection_state_limit_exceeded");
+      return;
+    }
 
     if (delay === 0) {
       connection.close(AUTH_EXPIRED_CLOSE_CODE, "Authentication expired");
@@ -150,6 +181,11 @@ export class Collaboration extends YServer {
     connection: Connection<CollaborationConnectionState>,
     message: WSMessage
   ): Promise<void> {
+    if (this.storedStateRefusal) {
+      connection.close(RESOURCE_LIMIT_CLOSE_CODE, "Room unavailable");
+      return;
+    }
+
     const expiresAt = connection.state?.[AUTH_EXPIRY_STATE_KEY];
     if (!Number.isSafeInteger(expiresAt) || (expiresAt as number) * 1000 <= Date.now()) {
       connection.close(AUTH_EXPIRED_CLOSE_CODE, "Authentication expired");
@@ -193,10 +229,15 @@ export class Collaboration extends YServer {
       this.resourceLimits,
       byteLength
     );
-    connection.setState((state) => ({
-      ...(state || {}),
-      [RATE_STATE_KEY]: budget.state,
-    }));
+    if (
+      !trySetConnectionState(connection, (state) => ({
+        ...(state || {}),
+        [RATE_STATE_KEY]: budget.state,
+      }))
+    ) {
+      rejectForResourceLimit(connection, "connection_state_limit_exceeded");
+      return;
+    }
     if (!budget.allowed) {
       rejectForResourceLimit(
         connection,
@@ -283,6 +324,12 @@ export class Collaboration extends YServer {
       await this.ctx.storage.deleteAlarm();
     } else {
       await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, nextExpiry * 1000));
+    }
+  }
+
+  private closeConnectionsForStoredStateRefusal(): void {
+    for (const connection of this.getConnections()) {
+      connection.close(RESOURCE_LIMIT_CLOSE_CODE, "Room unavailable");
     }
   }
 }

@@ -259,7 +259,10 @@ function wp_collab_cf_enqueue_scripts( $hook ) {
 	wp_enqueue_script(
 		'wp-collab-cf',
 		plugin_dir_url( __FILE__ ) . 'build/index.js',
-		array_merge( $asset['dependencies'], array( 'wp-sync' ) ),
+		array_merge(
+			$asset['dependencies'],
+			array( 'wp-data', 'wp-notices', 'wp-sync' )
+		),
 		$asset['version'],
 		array( 'in_footer' => false )
 	);

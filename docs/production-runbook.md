@@ -48,8 +48,11 @@ The application limits are public Wrangler variables:
 
 Invalid or contradictory values return a generic `503` before routing. A
 limit violation closes only the offending connection with application close
-code `4008`. Existing stored state above a newly lowered document limit is
-preserved and the room refuses to load; raise the limit or use the future
+code `4008`; the WordPress provider treats that code as terminal, stops
+reconnecting, and leaves a persistent editor notice. Authentication expiry
+uses code `4001` and remains reconnectable so a fresh credential can be minted.
+Existing oversized or corrupt stored state is preserved and the room refuses
+to load; raise an intentionally lowered limit or use the future
 operator-reviewed export/quarantine/reset procedure.
 
 ## First staging deployment
@@ -126,8 +129,9 @@ status, observed size, and configured limit. It deliberately excludes URLs,
 headers, room names, user IDs, origins, credential claims, and message content.
 
 Alert on sustained `configuration_invalid`, `auth_unavailable`,
-`stored_document_limit_exceeded`, `document_limit_exceeded_during_save`, and
-bursts of connection/message/update/rate-limit events. Dashboard request logs,
+`stored_document_limit_exceeded`, `stored_document_corrupt`,
+`document_limit_exceeded_during_save`, and bursts of
+connection/message/update/rate-limit events. Dashboard request logs,
 Logpush, traces, proxies, and SIEM pipelines must not record
 `Sec-WebSocket-Protocol`: it temporarily contains the bearer credential at the
 edge even though the Worker strips it before Durable Object routing. Keep log

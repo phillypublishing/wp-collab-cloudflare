@@ -2,6 +2,8 @@ import { addFilter } from '@wordpress/hooks';
 import apiFetch from '@wordpress/api-fetch';
 import YProvider from 'y-partyserver/provider';
 
+import { handleConnectionClose } from './connection-policy.mjs';
+
 const config = window.wpCollabCf || {};
 
 function noOpProvider() {
@@ -82,10 +84,11 @@ if ( config.wsUrl && config.tokenUrl ) {
 
 					const room = nextCredentials.room;
 					const endpoint = new URL( config.wsUrl );
-					return new YProvider( endpoint.host, room, ydoc, {
+					const provider = new YProvider( endpoint.host, room, ydoc, {
 						party: 'collaboration',
 						protocol: endpoint.protocol.replace( ':', '' ),
 						awareness,
+						connect: false,
 						WebSocketPolyfill: AuthenticatedWebSocket,
 						params: async () => {
 							const credentials =
@@ -103,6 +106,27 @@ if ( config.wsUrl && config.tokenUrl ) {
 							return { token: credentials.token };
 						},
 					} );
+					provider.on( 'connection-close', ( event ) => {
+						handleConnectionClose( event, provider, () => {
+							window.wp.data
+								.dispatch( 'core/notices' )
+								.createErrorNotice(
+									'Real-time collaboration stopped because this room reached a server resource limit. Save your work and ask an administrator to review the room before reconnecting.',
+									{
+										id: 'wp-collab-cf-resource-limit',
+										isDismissible: false,
+									}
+								);
+						} );
+					} );
+					provider.connect().catch( ( error ) => {
+						// eslint-disable-next-line no-console
+						console.error(
+							'WP Collab CF: unable to open WebSocket connection.',
+							error
+						);
+					} );
+					return provider;
 				},
 			];
 		}

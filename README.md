@@ -62,7 +62,7 @@ cd worker
 npm install
 # Authenticate with Cloudflare (or set CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN)
 wrangler login
-wrangler secret put COLLAB_AUTH_KEYS
+wrangler secret put COLLAB_AUTH_KEYS --env staging
 npm run check
 npm run deploy:staging
 ```

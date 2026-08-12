@@ -401,6 +401,32 @@ test("rejects non-WebSocket room requests before invoking PartyServer", async ()
   assert.equal(partyRouterCalls, 0, "the DO router/storage path was not reached");
 });
 
+test("rejects every HTTP path shape PartyServer routes to a room", async () => {
+  const roomPaths = [
+    `/parties/collaboration/${room}/extra`,
+    `//parties//collaboration//${room}`,
+    `/parties/collaboration/${room}//extra`,
+  ];
+
+  for (const path of roomPaths) {
+    let partyRouterCalls = 0;
+    const response = await routeAfterWebSocketGuard(
+      new Request(`https://worker.example.test${path}`),
+      async () => {
+        partyRouterCalls += 1;
+        throw new Error("PartyServer would initialize the Durable Object");
+      }
+    );
+
+    assert.equal(response.status, 426, path);
+    assert.equal(
+      partyRouterCalls,
+      0,
+      `${path} did not reach the DO router/storage path`
+    );
+  }
+});
+
 test("allows a WebSocket upgrade to reach PartyServer", async () => {
   let partyRouterCalls = 0;
   const request = new Request(

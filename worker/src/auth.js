@@ -438,8 +438,15 @@ export function getAuthExpiryDelay(
  * @returns {Promise<Response | T>}
  */
 export async function routeAfterWebSocketGuard(request, routeRequest) {
-  const path = new URL(request.url).pathname;
-  const isRoomRequest = /^\/parties\/collaboration\/[^/]+\/?$/u.test(path);
+  // Match PartyServer's own segment parsing exactly. It ignores empty and
+  // trailing/suffix segments when resolving the namespace and room, so an
+  // exact-path regular expression would leave alternate routed shapes open.
+  const parts = new URL(request.url).pathname.split("/").filter(Boolean);
+  const isRoomRequest =
+    parts.length >= 3 &&
+    parts[0] === "parties" &&
+    parts[1] === "collaboration" &&
+    Boolean(parts[2]);
   const isWebSocket =
     request.headers.get("Upgrade")?.toLowerCase() === "websocket";
   if (isRoomRequest && !isWebSocket) {

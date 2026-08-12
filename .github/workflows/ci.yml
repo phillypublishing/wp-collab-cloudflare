@@ -38,6 +38,7 @@ jobs:
           cache: npm
           cache-dependency-path: plugin/wp-collab-cf/package-lock.json
       - run: npm ci
+      - run: npm test
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
       - run: php -l wp-collab-cf.php

@@ -7,8 +7,11 @@ import {
   hasConnectionCapacity,
   messageByteLength,
   parseResourceLimits,
+  restoreStoredDocumentState,
   ResourceLimitError,
+  trySetConnectionState,
 } from "../src/limits.js";
+import * as Y from "yjs";
 
 function encodeVarUint(value) {
   const bytes = [];
@@ -148,4 +151,61 @@ test("hasConnectionCapacity counts the newly accepted candidate", () => {
   assert.equal(hasConnectionCapacity(1, limits), true);
   assert.equal(hasConnectionCapacity(2, limits), true);
   assert.equal(hasConnectionCapacity(3, limits), false);
+});
+
+test("trySetConnectionState fails closed when the hibernation attachment is full", () => {
+  const accepted = trySetConnectionState(
+    { setState: (updater) => updater({ existing: true }) },
+    (state) => ({ ...state, next: true })
+  );
+  assert.equal(accepted, true);
+
+  const rejected = trySetConnectionState(
+    {
+      setState: () => {
+        throw new Error("WebSocket attachment exceeds 2048 bytes");
+      },
+    },
+    (state) => state
+  );
+  assert.equal(rejected, false);
+});
+
+test("restoreStoredDocumentState validates before mutating the live document", () => {
+  const source = new Y.Doc();
+  source.getText("content").insert(0, "persisted collaboration state");
+  const validUpdate = Y.encodeStateAsUpdate(source);
+  const restored = new Y.Doc();
+
+  const result = restoreStoredDocumentState(restored, validUpdate, 65_536);
+  assert.equal(result.ok, true);
+  assert.equal(restored.getText("content").toString(), "persisted collaboration state");
+
+  const untouched = new Y.Doc();
+  untouched.getText("content").insert(0, "local sentinel");
+  const before = Y.encodeStateAsUpdate(untouched);
+  const corrupt = restoreStoredDocumentState(
+    untouched,
+    Uint8Array.from([255]),
+    65_536
+  );
+  assert.deepEqual(corrupt, {
+    ok: false,
+    reason: "stored_document_corrupt",
+    observed: 1,
+  });
+  assert.deepEqual(Y.encodeStateAsUpdate(untouched), before);
+
+  const oversized = restoreStoredDocumentState(
+    untouched,
+    new Uint8Array(65_537),
+    65_536
+  );
+  assert.deepEqual(oversized, {
+    ok: false,
+    reason: "stored_document_limit_exceeded",
+    observed: 65_537,
+    limit: 65_536,
+  });
+  assert.deepEqual(Y.encodeStateAsUpdate(untouched), before);
 });

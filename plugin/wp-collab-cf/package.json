@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "build": "wp-scripts build",
-    "start": "wp-scripts start"
+    "start": "wp-scripts start",
+    "test": "node --test test/**/*.test.mjs"
   },
   "dependencies": {
     "@wordpress/api-fetch": "^7.52.0",
