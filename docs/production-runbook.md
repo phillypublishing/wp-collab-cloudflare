@@ -10,16 +10,6 @@ test environment.
 - The upstream project has no license. The owner must choose and add a license
   before redistribution or third-party production use. This repository does
   not infer one.
-- There is no revision-aware generation/invalidation protocol between
-  WordPress and retained Yjs state. Decide which WordPress events create a new
-  collaboration generation, what happens on revision restore and out-of-band
-  mutation, and whether pending collaborators may finish before invalidation.
-- There is no authenticated operator endpoint that can export, quarantine,
-  replace, or delete one corrupt room. Do not delete Durable Object storage to
-  make a load error disappear. Build and audit an explicit recovery path first.
-- A retention duration and legal/data-governance owner have not been selected.
-  Do not implement time-based deletion until the invalidation and recovery
-  contracts identify which state is safe to remove.
 - Load-test the configured limits with representative Gutenberg documents and
   peak collaborator counts. The checked-in values are conservative starting
   bounds, not capacity promises.
@@ -41,7 +31,7 @@ The application limits are public Wrangler variables:
 | `COLLAB_MAX_CONNECTIONS_PER_ROOM` | 20 | Accepted WebSockets in one room, including the new candidate |
 | `COLLAB_MAX_MESSAGE_BYTES` | 1,048,576 | Maximum WebSocket frame payload |
 | `COLLAB_MAX_UPDATE_BYTES` | 524,288 | Maximum Yjs sync step-two/update payload |
-| `COLLAB_MAX_DOCUMENT_BYTES` | 1,500,000 | Maximum compact merged Yjs update stored for a room |
+| `COLLAB_MAX_DOCUMENT_BYTES` | 1,500,000 | Maximum compact merged Yjs update held in memory for a room |
 | `COLLAB_RATE_WINDOW_SECONDS` | 10 | Fixed per-connection rate window |
 | `COLLAB_MAX_MESSAGES_PER_WINDOW` | 200 | Frames per connection per window |
 | `COLLAB_MAX_BYTES_PER_WINDOW` | 4,194,304 | Aggregate bytes per connection per window |
@@ -51,9 +41,6 @@ limit violation closes only the offending connection with application close
 code `4008`; the WordPress provider treats that code as terminal, stops
 reconnecting, and leaves a persistent editor notice. Authentication expiry
 uses code `4001` and remains reconnectable so a fresh credential can be minted.
-Existing oversized or corrupt stored state is preserved and the room refuses
-to load; raise an intentionally lowered limit or use the future
-operator-reviewed export/quarantine/reset procedure.
 
 ## First staging deployment
 
@@ -85,8 +72,11 @@ operator-reviewed export/quarantine/reset procedure.
    staging WordPress site with the matching site ID, secret, Worker WSS URL,
    and `WP_COLLAB_CF_AUTH_KEY_ID` when using a named key.
 6. Run two independent editor sessions through connect, convergence, forced
-   reconnect, credential refresh, and Worker restart. Confirm permission
-   denial and limit rejection cases before promoting the exact commit.
+   reconnect, and credential refresh. Save a non-baseline edit, confirm
+   `_crdt_document` exists in WordPress, disconnect every client, restart the
+   Worker, and confirm a new editor hydrates that state from WordPress. Also
+   confirm a raw Worker-only probe is absent after restart, plus permission
+   denial and limit rejection cases, before promoting the exact commit.
 
 Production uses the same sequence with `--env production`. Deployment is a
 manual, separately authorized action; CI only builds a dry-run bundle.
@@ -128,9 +118,7 @@ The Worker emits JSON events containing only the service name, event code,
 status, observed size, and configured limit. It deliberately excludes URLs,
 headers, room names, user IDs, origins, credential claims, and message content.
 
-Alert on sustained `configuration_invalid`, `auth_unavailable`,
-`stored_document_limit_exceeded`, `stored_document_corrupt`,
-`document_limit_exceeded_during_save`, and bursts of
+Alert on sustained `configuration_invalid`, `auth_unavailable`, and bursts of
 connection/message/update/rate-limit events. Dashboard request logs,
 Logpush, traces, proxies, and SIEM pipelines must not record
 `Sec-WebSocket-Protocol`: it temporarily contains the bearer credential at the
@@ -146,40 +134,29 @@ Cloudflare notes that `wrangler tail` holds WebSocket request logs until the
 socket closes and should not be attached to a high-volume Worker. Prefer
 sampled observability and bounded incident windows.
 
-## State recovery and retention
+## Ephemeral room lifecycle
 
-WordPress is authoritative for saved posts; the Durable Object update exists
-only for live collaboration continuity. Until operator tooling exists:
+The Worker stores no Yjs document bytes. A room may remain in memory while its
+Durable Object instance is live, and connected clients re-sync it after
+hibernation. Once no client can provide state and the Worker restarts or the
+instance is evicted, the relay starts empty. Gutenberg then loads the durable
+CRDT snapshot and current entity values from WordPress.
 
-1. Treat a corrupt/load-failing room as an incident and prevent reconnect
-   loops at WordPress.
-2. Record the Worker version, environment, Durable Object identifier, room
-   generation, timestamps, and related WordPress revision without recording
-   credentials or editor content in general logs.
-3. Preserve the original storage value. Do not automatically replace it with
-   an empty Yjs update and do not delete the whole namespace.
-4. Recover against a duplicate, access-controlled environment only after the
-   content owner approves inspection of unpublished state.
-5. Restore service by a reviewed generation change or explicit room reset only
-   after WordPress authority and collaborator impact are resolved.
-
-A future operator endpoint must require distinct administrative
-authentication, provide export-before-mutation, write an immutable audit
-record, support quarantine rather than silent deletion, and target one exact
-site/blog/object/generation. The same generation contract must define
-retention. Candidate triggers requiring a product decision are post save,
-autosave, revision restore, trash/delete, post-type change, multisite deletion,
-and edits performed outside the block editor.
+The `onLoad()` hook deletes the exact legacy `yjs-state-v1` key used by earlier
+versions. This cleans active historical rooms without touching alarms or
+hibernating WebSocket attachments. Inactive legacy room values cannot be
+enumerated through a Durable Object namespace; after the migration window,
+delete the retired environment or namespace through a separately reviewed
+account operation if complete historical erasure is required.
 
 ## Rollback
 
 - Roll back code with Wrangler's version/rollback workflow only after checking
-  that the target version understands the existing Durable Object schema and
-  credential format.
+  that the target version understands the credential format. Rolling back to a
+  persistence-writing version reintroduces the dual-authority design and
+  requires an explicit decision.
 - Keep the current and previous verification keys during rollback windows.
 - A code rollback must never delete or recreate the Durable Object namespace.
-- If a new limit rejects valid documents, restore the previous limit first;
-  the room state was preserved.
 - After rollback, repeat authenticated connect/reconnect/convergence checks and
   review the redacted security-event rate.
 

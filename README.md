@@ -8,7 +8,7 @@ WordPress 7.0 introduces collaborative editing powered by Yjs. By default it syn
 
 This project moves the sync relay to Cloudflare's edge:
 
-- **Durable Objects** coordinate document state with single-threaded consistency
+- **Durable Objects** coordinate live document state with single-threaded consistency
 - **WebSocket Hibernation** means idle editing sessions cost nothing
 - **PHP workers** are freed from long-polling — they only handle normal page/API requests
 
@@ -16,7 +16,7 @@ This project moves the sync relay to Cloudflare's edge:
 
 ```
 Browser A ──WebSocket──┐
-                        ├── Cloudflare Durable Object (Yjs relay) ──persists to DO storage
+                        ├── Cloudflare Durable Object (ephemeral Yjs relay)
 Browser B ──WebSocket──┘
 ```
 
@@ -128,9 +128,15 @@ Or via option: `wp option update wp_collab_cf_demo_post_id 123`
 
 3. The **Worker** receives that credential in a WebSocket subprotocol rather than the URL, verifies it plus the exact editor Origin, site/blog namespace, and room, strips the credential header, then routes to [y-partyserver](https://github.com/cloudflare/partykit/tree/main/packages/y-partyserver). Each post gets its own Durable Object instance. A Durable Object alarm ends each connection at credential expiry so reconnection reauthorizes against WordPress.
 
-4. The Durable Object saves Yjs state to its storage and reloads it after eviction or restart. WordPress remains authoritative for saved post content. See [SECURITY.md](SECURITY.md) for the persistence/invalidation boundary and residual production risks.
+4. The Durable Object keeps Yjs state in memory only. Gutenberg persists its
+   CRDT snapshot in WordPress post meta, and connected clients re-sync the room
+   after hibernation. A fully disconnected Worker restart starts with an empty
+   relay and Gutenberg hydrates the client from WordPress. See
+   [SECURITY.md](SECURITY.md) for the persistence boundary and residual risks.
+   This matches the relay/persistence split in Automattic's
+   [VIP RTC reference](https://github.com/Automattic/vip-real-time-collaboration).
 
 The Worker also applies fail-closed per-room connection, frame, Yjs update,
-merged-document, and per-connection rate limits. Checked-in defaults and
+in-memory merged-document, and per-connection rate limits. Checked-in defaults and
 environment-specific deployment procedures are documented in the
 [production runbook](docs/production-runbook.md).

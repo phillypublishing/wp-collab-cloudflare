@@ -7,11 +7,9 @@ import {
   hasConnectionCapacity,
   messageByteLength,
   parseResourceLimits,
-  restoreStoredDocumentState,
   ResourceLimitError,
   trySetConnectionState,
 } from "../src/limits.js";
-import * as Y from "yjs";
 
 function encodeVarUint(value) {
   const bytes = [];
@@ -169,43 +167,4 @@ test("trySetConnectionState fails closed when the hibernation attachment is full
     (state) => state
   );
   assert.equal(rejected, false);
-});
-
-test("restoreStoredDocumentState validates before mutating the live document", () => {
-  const source = new Y.Doc();
-  source.getText("content").insert(0, "persisted collaboration state");
-  const validUpdate = Y.encodeStateAsUpdate(source);
-  const restored = new Y.Doc();
-
-  const result = restoreStoredDocumentState(restored, validUpdate, 65_536);
-  assert.equal(result.ok, true);
-  assert.equal(restored.getText("content").toString(), "persisted collaboration state");
-
-  const untouched = new Y.Doc();
-  untouched.getText("content").insert(0, "local sentinel");
-  const before = Y.encodeStateAsUpdate(untouched);
-  const corrupt = restoreStoredDocumentState(
-    untouched,
-    Uint8Array.from([255]),
-    65_536
-  );
-  assert.deepEqual(corrupt, {
-    ok: false,
-    reason: "stored_document_corrupt",
-    observed: 1,
-  });
-  assert.deepEqual(Y.encodeStateAsUpdate(untouched), before);
-
-  const oversized = restoreStoredDocumentState(
-    untouched,
-    new Uint8Array(65_537),
-    65_536
-  );
-  assert.deepEqual(oversized, {
-    ok: false,
-    reason: "stored_document_limit_exceeded",
-    observed: 65_537,
-    limit: 65_536,
-  });
-  assert.deepEqual(Y.encodeStateAsUpdate(untouched), before);
 });

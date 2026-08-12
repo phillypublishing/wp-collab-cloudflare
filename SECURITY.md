@@ -8,7 +8,7 @@ authenticated application service, not as a public WebSocket relay.
 - WordPress is authoritative for user identity, `edit_post` authorization,
   saved post content, revisions, and autosaves.
 - The Worker is authoritative only for admitting WebSocket connections and
-  relaying/persisting the transient Yjs room state.
+  relaying transient Yjs room state while clients are active.
 - WordPress and the Worker share a random HMAC key for one stable installation
   identifier. The key is never localized into browser JavaScript.
 - TLS (`https:`/`wss:`) is required outside a loopback or encrypted local
@@ -35,16 +35,19 @@ installations and between blogs in one multisite network.
 
 ## Persistence authority
 
-The Durable Object stores a compact Yjs update through `onSave()` and restores
-it through `onLoad()`. This survives Worker eviction and Wrangler/Worker
-restarts. It is collaboration continuity, not an independent post backup.
-WordPress remains the source of truth for saved content.
+The Durable Object never writes Yjs document bytes to storage. Its `onLoad()`
+hook deletes the retired `yjs-state-v1` value from rooms created by older
+versions, then starts with an empty in-memory document. Alarms and hibernating
+WebSocket attachments remain durable because they enforce connection expiry;
+they do not contain the shared document.
 
-There is currently no revision-aware invalidation protocol between WordPress
-and the Durable Object. Restoring an old WordPress revision or changing content
-out of band can therefore merge with retained Yjs state when that room is next
-opened. Do not use the stored update as a canonical record, and define an
-invalidation/generation policy before long-lived production retention.
+Gutenberg persists the CRDT snapshot in WordPress's `_crdt_document` post meta.
+That WordPress record, normal post fields, revisions, and autosaves are the
+durable authority. Connected clients re-sync an empty relay after Durable
+Object hibernation. If every client disconnects and the Worker restarts, a new
+editor session hydrates from WordPress instead of Worker storage. Consequently,
+revision restores and out-of-band WordPress changes follow Gutenberg's own CRDT
+reconciliation rather than competing with a second durable snapshot.
 
 ## Deliberate compatibility break
 
@@ -61,24 +64,19 @@ capability model. There is no insecure compatibility flag.
   installation. The keyring supports named overlapping keys plus an explicit
   legacy bridge; follow the staged rotation procedure rather than replacing a
   live key in one step.
-- Snapshot saves are debounced (250 ms, at most 1 second), leaving a small
-  crash-loss window. Storage failures are logged by `y-partyserver` but do not
-  block live editing.
+- Unsaved collaboration durability depends on Gutenberg successfully persisting
+  `_crdt_document` to WordPress or on at least one connected client retaining
+  the state. The Worker is intentionally not an independent recovery store.
 - The credential necessarily reaches Cloudflare's edge in a request header.
   Do not enable request-header logging or copy `Sec-WebSocket-Protocol` into
   custom logs. The Worker strips it before Durable Object forwarding, but
   account-level log/trace products must also be configured to redact it.
-- A corrupt or over-limit stored Yjs update makes room loading fail. It is not
-  discarded automatically because silent reset could lose unpublished work;
-  recovery requires an explicit operator-reviewed storage reset. A versioned
-  quarantine/reset workflow remains production work.
 - The Worker enforces configurable connection, message, Yjs update,
   merged-document, message-rate, and byte-rate limits below Cloudflare's
   platform ceilings. These defaults still require representative load tests
   and alert thresholds before production.
 
 The [production runbook](docs/production-runbook.md) records the rollout,
-rotation, log-redaction, rollback, and state-recovery procedures plus release
-blockers. In particular, the project still needs an explicit license,
-revision-aware generation/invalidation semantics, authenticated operator
-recovery tooling, and an approved retention policy.
+rotation, log-redaction, rollback, and remaining release blockers. In
+particular, the project still needs an explicit license, representative load
+tests, and account-level edge abuse and credential-header controls.

@@ -13,18 +13,17 @@ import {
   sanitizeAuthenticatedRequest,
   verifyConnectionRequest,
 } from "./auth.js";
+import { clearLegacyDocumentState } from "./ephemeral-relay.js";
 import {
   consumeMessageBudget,
   getYjsUpdate,
   hasConnectionCapacity,
   messageByteLength,
   parseResourceLimits,
-  restoreStoredDocumentState,
   ResourceLimitError,
   trySetConnectionState,
 } from "./limits.js";
 
-const YJS_STATE_KEY = "yjs-state-v1";
 const AUTH_EXPIRY_STATE_KEY = "__wpCollabAuthExpires";
 const RATE_STATE_KEY = "__wpCollabRateWindow";
 const AUTH_EXPIRED_CLOSE_CODE = 4001;
@@ -39,9 +38,6 @@ type CollaborationConnectionState = Record<string, unknown> & {
   [RATE_STATE_KEY]?: RateState;
 };
 type ResourceLimits = ReturnType<typeof parseResourceLimits>;
-type StoredStateRefusal =
-  | "stored_document_limit_exceeded"
-  | "stored_document_corrupt";
 
 interface Env {
   Collaboration: DurableObjectNamespace<Collaboration>;
@@ -61,83 +57,35 @@ interface Env {
  * y-partyserver handles:
  *   - Yjs sync protocol (SyncStep1/SyncStep2)
  *   - Awareness relay (cursor positions, user presence)
- * This subclass persists a compact Yjs update to Durable Object storage.
+ * Document bytes remain in memory only. Gutenberg persists the canonical Yjs
+ * snapshot in WordPress; y-partyserver re-syncs from connected clients after
+ * hibernation and starts empty after every fully disconnected Worker restart.
  */
 export class Collaboration extends YServer {
   static options = {
     hibernate: true,
   };
 
-  static callbackOptions = {
-    debounceWait: 250,
-    debounceMaxWait: 1000,
-  };
-
   private readonly resourceLimits: ResourceLimits;
-  private documentBudgetBytes = 0;
-  private storedStateRefusal: StoredStateRefusal | undefined;
+  private documentBudgetBytes: number;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.resourceLimits = parseResourceLimits(env);
-  }
-
-  async onLoad(): Promise<void> {
-    const state = await this.ctx.storage.get<ArrayBuffer>(YJS_STATE_KEY);
-    if (state) {
-      const restored = restoreStoredDocumentState(
-        this.document,
-        state,
-        this.resourceLimits.maxDocumentBytes
-      );
-      if (!restored.ok) {
-        this.storedStateRefusal = restored.reason;
-        logSecurityEvent(restored.reason, {
-          observed: restored.observed,
-          ...(restored.reason === "stored_document_limit_exceeded"
-            ? { limit: restored.limit }
-            : {}),
-        });
-        this.closeConnectionsForStoredStateRefusal();
-        return;
-      }
-      this.documentBudgetBytes = restored.bytes;
-      return;
-    }
     this.documentBudgetBytes = Y.encodeStateAsUpdate(this.document).byteLength;
   }
 
-  async onSave(): Promise<void> {
-    if (this.storedStateRefusal) {
-      // Preserve the original value for operator review. A refused room never
-      // replaces its stored state with an empty or partially restored update.
-      return;
-    }
-    const update = Y.encodeStateAsUpdate(this.document);
-    if (update.byteLength > this.resourceLimits.maxDocumentBytes) {
-      logSecurityEvent("document_limit_exceeded_during_save", {
-        observed: update.byteLength,
-        limit: this.resourceLimits.maxDocumentBytes,
-      });
-      throw new Error("Collaboration state exceeds the configured limit");
-    }
-    const state = update.buffer.slice(
-      update.byteOffset,
-      update.byteOffset + update.byteLength
-    );
-    this.documentBudgetBytes = update.byteLength;
-    await this.ctx.storage.put(YJS_STATE_KEY, state);
+  async onLoad(): Promise<void> {
+    // Versions before the ephemeral-relay model stored document bytes here.
+    // Delete that exact legacy value without touching alarms or hibernating
+    // WebSocket attachments, which remain part of the connection lifecycle.
+    await clearLegacyDocumentState(this.ctx.storage);
   }
 
   async onConnect(
     connection: Connection<CollaborationConnectionState>,
     context: ConnectionContext
   ): Promise<void> {
-    if (this.storedStateRefusal) {
-      connection.close(RESOURCE_LIMIT_CLOSE_CODE, "Room unavailable");
-      return;
-    }
-
     let connectionCount = 0;
     for (const _connection of this.getConnections()) {
       connectionCount += 1;
@@ -181,11 +129,6 @@ export class Collaboration extends YServer {
     connection: Connection<CollaborationConnectionState>,
     message: WSMessage
   ): Promise<void> {
-    if (this.storedStateRefusal) {
-      connection.close(RESOURCE_LIMIT_CLOSE_CODE, "Room unavailable");
-      return;
-    }
-
     const expiresAt = connection.state?.[AUTH_EXPIRY_STATE_KEY];
     if (!Number.isSafeInteger(expiresAt) || (expiresAt as number) * 1000 <= Date.now()) {
       connection.close(AUTH_EXPIRED_CLOSE_CODE, "Authentication expired");
@@ -327,11 +270,6 @@ export class Collaboration extends YServer {
     }
   }
 
-  private closeConnectionsForStoredStateRefusal(): void {
-    for (const connection of this.getConnections()) {
-      connection.close(RESOURCE_LIMIT_CLOSE_CODE, "Room unavailable");
-    }
-  }
 }
 
 let cachedAuthKeysSource: string | undefined;

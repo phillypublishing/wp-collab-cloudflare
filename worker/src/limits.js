@@ -1,7 +1,5 @@
 // @ts-check
 
-import * as Y from "yjs";
-
 const DEFAULT_LIMITS = Object.freeze({
   maxConnectionsPerRoom: 20,
   maxMessageBytes: 1_048_576,
@@ -264,59 +262,5 @@ export function trySetConnectionState(connection, updater) {
     return true;
   } catch {
     return false;
-  }
-}
-
-/**
- * Validate stored Yjs state in an isolated document before touching the live
- * room. Invalid/oversized values remain in storage for operator review.
- *
- * @param {Y.Doc} document
- * @param {ArrayBuffer | Uint8Array} state
- * @param {number} maxDocumentBytes
- * @returns {
- *   | { ok: true, bytes: number }
- *   | { ok: false, reason: "stored_document_limit_exceeded", observed: number, limit: number }
- *   | { ok: false, reason: "stored_document_corrupt", observed: number }
- * }
- */
-export function restoreStoredDocumentState(
-  document,
-  state,
-  maxDocumentBytes
-) {
-  const bytes =
-    state instanceof Uint8Array ? state : new Uint8Array(state);
-  if (bytes.byteLength > maxDocumentBytes) {
-    return {
-      ok: false,
-      reason: "stored_document_limit_exceeded",
-      observed: bytes.byteLength,
-      limit: maxDocumentBytes,
-    };
-  }
-
-  const candidate = new Y.Doc();
-  try {
-    Y.applyUpdate(candidate, bytes);
-    const compact = Y.encodeStateAsUpdate(candidate);
-    if (compact.byteLength > maxDocumentBytes) {
-      return {
-        ok: false,
-        reason: "stored_document_limit_exceeded",
-        observed: compact.byteLength,
-        limit: maxDocumentBytes,
-      };
-    }
-    Y.applyUpdate(document, compact);
-    return { ok: true, bytes: compact.byteLength };
-  } catch {
-    return {
-      ok: false,
-      reason: "stored_document_corrupt",
-      observed: bytes.byteLength,
-    };
-  } finally {
-    candidate.destroy();
   }
 }

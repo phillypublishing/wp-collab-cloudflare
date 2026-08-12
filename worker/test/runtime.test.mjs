@@ -203,7 +203,7 @@ test("workerd enforces room capacity and authentication-expiry alarms", async (t
   await closeSocket(refreshed.socket, refreshed.close);
 });
 
-test("workerd reloads persisted Yjs state after a runtime restart", async (t) => {
+test("workerd does not retain Yjs state after a runtime restart", async (t) => {
   const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-persist-"));
   let runtime = createRuntime(persistPath);
   t.after(async () => {
@@ -213,9 +213,21 @@ test("workerd reloads persisted Yjs state after a runtime restart", async (t) =>
 
   const writer = await connect(runtime);
   const source = new Y.Doc();
-  source.getText("content").insert(0, "persisted through Durable Object storage");
+  source.getText("content").insert(0, "discarded after Worker restart");
   writer.socket.send(syncMessage(2, Y.encodeStateAsUpdate(source)));
-  await new Promise((resolve) => setTimeout(resolve, 1_300));
+  const seedConfirmation = waitForSyncUpdate(writer.socket);
+  const seedQuery = new Y.Doc();
+  writer.socket.send(syncMessage(0, Y.encodeStateVector(seedQuery)));
+  const seededUpdate = await seedConfirmation;
+  const seededRelay = new Y.Doc();
+  Y.applyUpdate(seededRelay, seededUpdate);
+  assert.equal(
+    seededRelay.getText("content").toString(),
+    "discarded after Worker restart"
+  );
+  source.destroy();
+  seedQuery.destroy();
+  seededRelay.destroy();
   await closeSocket(writer.socket, writer.close);
   await runtime.dispose();
 
@@ -229,9 +241,8 @@ test("workerd reloads persisted Yjs state after a runtime restart", async (t) =>
   const update = await updatePromise;
   const restored = new Y.Doc();
   Y.applyUpdate(restored, update);
-  assert.equal(
-    restored.getText("content").toString(),
-    "persisted through Durable Object storage"
-  );
+  assert.equal(restored.getText("content").toString(), "");
+  emptyDocument.destroy();
+  restored.destroy();
   await closeSocket(reader.socket, reader.close);
 });
