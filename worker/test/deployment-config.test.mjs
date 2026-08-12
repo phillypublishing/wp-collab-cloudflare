@@ -42,3 +42,14 @@ test("named deployments bind isolated Analytics Engine datasets", async () => {
     ]
   );
 });
+
+test("staging publishes one stable workers.dev route without preview aliases", async () => {
+  const source = await readFile(
+    new URL("../wrangler.jsonc", import.meta.url),
+    "utf8"
+  );
+  const config = JSON.parse(source.replace(/^\s*\/\/.*$/gmu, ""));
+
+  assert.equal(config.env.staging.workers_dev, true);
+  assert.equal(config.env.staging.preview_urls, false);
+});
