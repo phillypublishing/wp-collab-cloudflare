@@ -132,6 +132,43 @@ server paths. Diagnostics do not mark a meta box as compatible; plugin authors
 must opt in with `__rtc_compatible_meta_box` only after verifying that its data
 model is safe during concurrent editing.
 
+### Suppress selected meta boxes site-wide
+
+Sites may explicitly remove selected legacy meta boxes from block-editor
+requests without changing their registration, callbacks, or save hooks. The
+plugin does not directly change saved meta, but an owning plugin's save handler
+may react to missing form fields. Characterize every selected meta box against
+the exact plugin version before rollout. Supply exact IDs with the
+`wp_collab_cf_suppressed_meta_box_ids` filter;
+there are no built-in third-party defaults, wildcards, or fuzzy matching:
+
+```php
+add_filter(
+	'wp_collab_cf_suppressed_meta_box_ids',
+	function ( $ids, WP_Screen $screen, WP_Post $post ) {
+		if ( 'post' === $screen->id ) {
+			$ids[] = 'your_exact_meta_box_id';
+		}
+		return $ids;
+	},
+	10,
+	3
+);
+```
+
+The policy defaults to off. A user with `manage_options` can enable it from the
+post editor's **Real-time collaboration** document-settings panel. Enabling it
+is site-wide for the current WordPress blog: the selected boxes no longer
+render or submit for any user. The control refuses changes while the current
+post is dirty or saving, saves through cookie-authenticated REST with the Core
+`wp_rest` nonce, and reloads after a successful change. Disable the policy to
+restore normal rendering and Gutenberg's compatibility blockade.
+
+`wpCollabCfDiagnostics.report().metaBoxSuppression` reports the configured,
+matched, suppressed, unmatched, and remaining blocker IDs plus enabled,
+effective, and malformed-policy state. Remaining blockers and compatibility
+still come exclusively from Gutenberg's rendered meta-box store.
+
 ### 5. Test
 
 Open the same post in two browser tabs. Edits in one tab should appear in the other in real time.

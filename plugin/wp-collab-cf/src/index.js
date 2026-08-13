@@ -12,6 +12,7 @@ import {
 	shouldAutoLogRtcDiagnostics,
 } from './rtc-diagnostics.mjs';
 import { isSupportedSyncObject } from './sync-object-policy.mjs';
+import { registerMetaBoxSuppressionUi } from './meta-box-suppression-ui.js';
 
 const config = window.wpCollabCf || {};
 
@@ -199,3 +200,5 @@ if ( config.wsUrl && config.tokenUrl ) {
 		}
 	);
 }
+
+registerMetaBoxSuppressionUi();

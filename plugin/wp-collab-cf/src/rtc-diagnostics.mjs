@@ -135,6 +135,37 @@ export function createRtcDiagnosticsReport( {
 	const incompatibleMetaBoxes = metaBoxes.filter(
 		( metaBox ) => ! metaBox.rtcCompatible
 	);
+	const serverSuppression =
+		server.metaBoxSuppression &&
+		typeof server.metaBoxSuppression === 'object'
+			? server.metaBoxSuppression
+			: {};
+	const metaBoxSuppression = {
+		configuredIds: Array.isArray( serverSuppression.configuredIds )
+			? serverSuppression.configuredIds
+			: [],
+		enabled: serverSuppression.enabled === true,
+		effective: serverSuppression.effective === true,
+		matchedIds: Array.isArray( serverSuppression.matchedIds )
+			? serverSuppression.matchedIds
+			: [],
+		suppressedIds: Array.isArray( serverSuppression.suppressedIds )
+			? serverSuppression.suppressedIds
+			: [],
+		unmatchedIds: Array.isArray( serverSuppression.unmatchedIds )
+			? serverSuppression.unmatchedIds
+			: [],
+		remainingBlockerIds: incompatibleMetaBoxes.map( ( box ) => box.id ),
+		warning:
+			typeof serverSuppression.warning === 'string'
+				? serverSuppression.warning
+				: null,
+		originalMetaBoxes: Array.isArray(
+			serverSuppression.originalMetaBoxes
+		)
+			? serverSuppression.originalMetaBoxes
+			: [],
+	};
 	const disabledPostTypes = Array.isArray(
 		browser._wpCollaborationDisabledPostTypes
 	)
@@ -222,6 +253,7 @@ export function createRtcDiagnosticsReport( {
 		},
 		blockers,
 		metaBoxes,
+		metaBoxSuppression,
 	};
 }
 

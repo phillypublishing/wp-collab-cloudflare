@@ -70,6 +70,11 @@ node -e '
 	const expectedBuiltAt = process.argv[ 5 ];
 	const expectedRepository = process.argv[ 6 ];
 	const expectedRef = process.argv[ 7 ];
+	const expectedVersion = process.argv[ 8 ];
+	const phpSource = fs.readFileSync( process.argv[ 9 ], "utf8" );
+	const phpVersion = phpSource.match(
+		/define\(\s*["\x27]WP_COLLAB_CF_VERSION["\x27]\s*,\s*["\x27]([^"\x27]+)["\x27]\s*\)/
+	)?.[ 1 ];
 	const expectedSha256 = crypto.createHash( "sha256" ).update( fs.readFileSync( zip ) ).digest( "hex" );
 	const expectedArtifact = require( "node:path" ).basename( zip );
 	if ( manifest.schema !== "wp-collab-cf-plugin-artifact/v1" ) {
@@ -78,6 +83,9 @@ node -e '
 	if ( JSON.stringify( manifest.files ) !== JSON.stringify( expected ) ) {
 		throw new Error( "Manifest files do not match the ZIP allowlist." );
 	}
+	if ( phpVersion !== expectedVersion ) {
+		throw new Error( "PHP plugin version does not match package.json." );
+	}
 	for ( const [ field, actual, wanted ] of [
 		[ "commit", manifest.commit, expectedCommit ],
 		[ "artifact", manifest.artifact, expectedArtifact ],
@@ -85,6 +93,7 @@ node -e '
 		[ "builtAt", manifest.builtAt, expectedBuiltAt ],
 		[ "repository", manifest.repository, expectedRepository ],
 		[ "ref", manifest.ref, expectedRef ],
+		[ "pluginVersion", manifest.pluginVersion, expectedVersion ],
 	] ) {
 		if ( actual !== wanted ) {
 			throw new Error( `Manifest ${ field } does not match the packaged source.` );
@@ -97,7 +106,9 @@ node -e '
 	"$(git -C "${repo_root}" rev-parse HEAD)" \
 	"$(git -C "${repo_root}" show -s --format=%cI HEAD | node -p 'new Date(require("node:fs").readFileSync(0, "utf8").trim()).toISOString()')" \
 	"${GITHUB_REPOSITORY:-local}" \
-	"${GITHUB_REF_NAME:-$(git -C "${repo_root}" branch --show-current)}"
+	"${GITHUB_REF_NAME:-$(git -C "${repo_root}" branch --show-current)}" \
+	"$(node -p 'require(process.argv[1]).version' "${repo_root}/plugin/wp-collab-cf/package.json")" \
+	"${repo_root}/plugin/wp-collab-cf/wp-collab-cf.php"
 
 (
 	cd "$(dirname "${first_zip}")"

@@ -352,6 +352,64 @@ test( 'uses the Gutenberg store as the compatibility authority', () => {
 	assert.deepEqual( report.blockers[ 0 ].metaBoxIds, [ 'late-box' ] );
 } );
 
+test( 'reports site-wide suppression while keeping the browser store authoritative for remaining blockers', () => {
+	const report = createRtcDiagnosticsReport( {
+		wp: createWp( {
+			metaBoxes: [ { id: 'still-rendered', title: 'Still rendered' } ],
+			syncConfig: {
+				supportsPersistence: true,
+				shouldSync: () => true,
+			},
+		} ),
+		browser: {
+			_wpCollaborationEnabled: true,
+			_wpCollaborationDisabledPostTypes: [],
+		},
+		server: {
+			...readyServerReport,
+			metaBoxes: [ { id: 'still-rendered', title: 'Still rendered' } ],
+			metaBoxSuppression: {
+				configuredIds: [ 'suppressed-box', 'missing-box' ],
+				enabled: true,
+				effective: true,
+				matchedIds: [ 'suppressed-box' ],
+				suppressedIds: [ 'suppressed-box' ],
+				unmatchedIds: [ 'missing-box' ],
+				remainingBlockerIds: [ 'server-guess-must-not-win' ],
+				warning: null,
+				originalMetaBoxes: [
+					{
+						id: 'suppressed-box',
+						title: 'Suppressed',
+						ownerType: 'plugin',
+						owner: 'fixture-plugin',
+					},
+				],
+			},
+		},
+	} );
+
+	assert.deepEqual( report.metaBoxSuppression, {
+		configuredIds: [ 'suppressed-box', 'missing-box' ],
+		enabled: true,
+		effective: true,
+		matchedIds: [ 'suppressed-box' ],
+		suppressedIds: [ 'suppressed-box' ],
+		unmatchedIds: [ 'missing-box' ],
+		remainingBlockerIds: [ 'still-rendered' ],
+		warning: null,
+		originalMetaBoxes: [
+			{
+				id: 'suppressed-box',
+				title: 'Suppressed',
+				ownerType: 'plugin',
+				owner: 'fixture-plugin',
+			},
+		],
+	} );
+	assert.deepEqual( report.blockers[ 0 ].metaBoxIds, [ 'still-rendered' ] );
+} );
+
 test( 'fails closed when Gutenberg meta-box evaluation throws', () => {
 	const report = createRtcDiagnosticsReport( {
 		wp: createWp( {

@@ -2,12 +2,12 @@
 /**
  * Plugin Name: WP Collab Cloudflare
  * Description: Routes WordPress 7.0 real-time collaboration through a Cloudflare Workers relay instead of HTTP polling.
- * Version: 0.3.0
+ * Version: 0.4.0
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WP_COLLAB_CF_VERSION', '0.3.0' );
+define( 'WP_COLLAB_CF_VERSION', '0.4.0' );
 
 /**
  * Set your deployed Worker URL, site identifier, and signing secret in
@@ -21,9 +21,158 @@ define( 'WP_COLLAB_CF_VERSION', '0.3.0' );
 
 add_action( 'admin_enqueue_scripts', 'wp_collab_cf_enqueue_scripts' );
 add_action( 'rest_api_init', 'wp_collab_cf_register_rest_routes' );
+add_filter( 'filter_block_editor_meta_boxes', 'wp_collab_cf_filter_block_editor_meta_boxes', 90 );
 add_filter( 'filter_block_editor_meta_boxes', 'wp_collab_cf_capture_meta_box_diagnostics', PHP_INT_MAX );
 add_action( 'admin_footer-post.php', 'wp_collab_cf_print_diagnostics_data', 99 );
 add_action( 'admin_footer-post-new.php', 'wp_collab_cf_print_diagnostics_data', 99 );
+
+/**
+ * Return the configured site-wide meta box suppression policy.
+ *
+ * Any malformed filter result invalidates the complete policy. IDs are exact,
+ * case-sensitive strings; no wildcard or fuzzy matching is performed.
+ *
+ * @return array Policy IDs and an optional diagnostic warning.
+ */
+function wp_collab_cf_get_suppressed_meta_box_ids() {
+	global $current_screen, $post;
+
+	$configured = apply_filters(
+		'wp_collab_cf_suppressed_meta_box_ids',
+		array(),
+		$current_screen,
+		$post
+	);
+	if ( ! is_array( $configured ) ) {
+		return array(
+			'ids'     => array(),
+			'warning' => 'malformed_suppressed_meta_box_ids',
+		);
+	}
+
+	$ids = array();
+	foreach ( $configured as $id ) {
+		if ( ! is_string( $id ) || '' === $id ) {
+			return array(
+				'ids'     => array(),
+				'warning' => 'malformed_suppressed_meta_box_ids',
+			);
+		}
+		if ( ! in_array( $id, $ids, true ) ) {
+			$ids[] = $id;
+		}
+	}
+
+	return array(
+		'ids'     => $ids,
+		'warning' => null,
+	);
+}
+
+/**
+ * Return whether the current blog has enabled its site-wide suppression policy.
+ *
+ * @return bool
+ */
+function wp_collab_cf_is_meta_box_suppression_enabled() {
+	$enabled = get_option( 'wp_collab_cf_meta_box_suppression_enabled', false );
+	return true === $enabled || 1 === $enabled || '1' === $enabled;
+}
+
+/**
+ * Remove configured meta box IDs from the block editor's filtered copy.
+ *
+ * The original inventory is captured for diagnostics. WordPress's persisted
+ * global registry, callbacks, save hooks, and meta values remain untouched.
+ *
+ * @param array $wp_meta_boxes Meta box registry passed through the editor filter.
+ * @return array Filtered copy of the registry.
+ */
+function wp_collab_cf_filter_block_editor_meta_boxes( $wp_meta_boxes ) {
+	global $current_screen, $wp_collab_cf_meta_box_suppression;
+
+	$screen_id       = $current_screen && isset( $current_screen->id ) ? $current_screen->id : '';
+	$include_owner   = current_user_can( 'activate_plugins' );
+	$original_boxes  = wp_collab_cf_describe_meta_boxes( $wp_meta_boxes, $screen_id, $include_owner );
+	$policy          = wp_collab_cf_get_suppressed_meta_box_ids();
+	$enabled         = wp_collab_cf_is_meta_box_suppression_enabled();
+	$configured_ids  = $policy['ids'];
+	$effective       = $enabled && null === $policy['warning'] && ! empty( $configured_ids );
+	$matched_ids     = array();
+	$filtered_boxes  = $wp_meta_boxes;
+
+	if ( $effective && isset( $filtered_boxes[ $screen_id ] ) && is_array( $filtered_boxes[ $screen_id ] ) ) {
+		$configured_id_set = array_fill_keys( $configured_ids, true );
+		$matched_id_set    = array();
+		foreach ( $filtered_boxes[ $screen_id ] as $context => $priorities ) {
+			if ( ! is_array( $priorities ) ) {
+				continue;
+			}
+			foreach ( $priorities as $priority => $boxes ) {
+				if ( ! is_array( $boxes ) ) {
+					continue;
+				}
+				foreach ( $boxes as $registered_id => $meta_box ) {
+					$meta_box_id = is_array( $meta_box ) && isset( $meta_box['id'] )
+						? $meta_box['id']
+						: $registered_id;
+					if ( ! is_string( $meta_box_id ) || ! isset( $configured_id_set[ $meta_box_id ] ) ) {
+						continue;
+					}
+					unset( $filtered_boxes[ $screen_id ][ $context ][ $priority ][ $registered_id ] );
+					$matched_id_set[ $meta_box_id ] = true;
+				}
+			}
+		}
+		$matched_ids = array_values(
+			array_filter(
+				$configured_ids,
+				function ( $id ) use ( $matched_id_set ) {
+					return isset( $matched_id_set[ $id ] );
+				}
+			)
+		);
+	}
+
+	$wp_collab_cf_meta_box_suppression = array(
+		'configuredIds'  => $configured_ids,
+		'enabled'        => $enabled,
+		'effective'      => $effective,
+		'matchedIds'     => $matched_ids,
+		'suppressedIds'  => $matched_ids,
+		'unmatchedIds'   => $effective ? array_values( array_diff( $configured_ids, $matched_ids ) ) : array(),
+		'remainingBlockerIds' => array(),
+		'warning'        => $policy['warning'],
+		'originalMetaBoxes' => $original_boxes,
+	);
+
+	return $filtered_boxes;
+}
+
+/**
+ * Return the most recent request's sanitized suppression diagnostics.
+ *
+ * @return array Suppression state.
+ */
+function wp_collab_cf_get_meta_box_suppression_diagnostics() {
+	global $wp_collab_cf_meta_box_suppression;
+
+	if ( isset( $wp_collab_cf_meta_box_suppression ) && is_array( $wp_collab_cf_meta_box_suppression ) ) {
+		return $wp_collab_cf_meta_box_suppression;
+	}
+
+	return array(
+		'configuredIds'      => array(),
+		'enabled'            => wp_collab_cf_is_meta_box_suppression_enabled(),
+		'effective'          => false,
+		'matchedIds'         => array(),
+		'suppressedIds'      => array(),
+		'unmatchedIds'       => array(),
+		'remainingBlockerIds' => array(),
+		'warning'            => null,
+		'originalMetaBoxes'  => array(),
+	);
+}
 
 /**
  * Describe a source file without exposing an absolute server path.
@@ -200,7 +349,7 @@ function wp_collab_cf_describe_meta_boxes( $wp_meta_boxes, $screen_id, $include_
  * @return array Unmodified meta box state.
  */
 function wp_collab_cf_capture_meta_box_diagnostics( $wp_meta_boxes ) {
-	global $current_screen, $wp_collab_cf_diagnostics_meta_boxes;
+	global $current_screen, $wp_collab_cf_diagnostics_meta_boxes, $wp_collab_cf_meta_box_suppression;
 
 	if ( $current_screen && isset( $current_screen->id ) ) {
 		$wp_collab_cf_diagnostics_meta_boxes = wp_collab_cf_describe_meta_boxes(
@@ -208,6 +357,21 @@ function wp_collab_cf_capture_meta_box_diagnostics( $wp_meta_boxes ) {
 			$current_screen->id,
 			current_user_can( 'activate_plugins' )
 		);
+		$remaining_blockers = array();
+		foreach ( $wp_collab_cf_diagnostics_meta_boxes as $meta_box ) {
+			if (
+				empty( $meta_box['rtcCompatible'] ) &&
+				isset( $meta_box['id'] ) &&
+				is_string( $meta_box['id'] ) &&
+				'' !== $meta_box['id'] &&
+				! in_array( $meta_box['id'], $remaining_blockers, true )
+			) {
+				$remaining_blockers[] = $meta_box['id'];
+			}
+		}
+		if ( isset( $wp_collab_cf_meta_box_suppression ) && is_array( $wp_collab_cf_meta_box_suppression ) ) {
+			$wp_collab_cf_meta_box_suppression['remainingBlockerIds'] = $remaining_blockers;
+		}
 	}
 
 	return $wp_meta_boxes;
@@ -234,6 +398,7 @@ function wp_collab_cf_print_diagnostics_data() {
 		'postTypeDisabled'     => $post_type && function_exists( 'wp_is_post_type_collaboration_disabled' )
 			? wp_is_post_type_collaboration_disabled( $post_type )
 			: null,
+		'metaBoxSuppression'   => wp_collab_cf_get_meta_box_suppression_diagnostics(),
 		'metaBoxes'            => isset( $wp_collab_cf_diagnostics_meta_boxes ) && is_array( $wp_collab_cf_diagnostics_meta_boxes )
 			? $wp_collab_cf_diagnostics_meta_boxes
 			: array(),
@@ -480,6 +645,62 @@ function wp_collab_cf_register_rest_routes() {
 			),
 		)
 	);
+	register_rest_route(
+		'wp-collab-cf/v1',
+		'/meta-box-suppression',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wp_collab_cf_rest_update_meta_box_suppression',
+			'permission_callback' => 'wp_collab_cf_can_manage_meta_box_suppression',
+		)
+	);
+}
+
+/**
+ * Restrict site-wide suppression policy changes to site administrators.
+ *
+ * WordPress REST cookie authentication validates the wp_rest nonce before this
+ * capability callback runs.
+ *
+ * @return bool
+ */
+function wp_collab_cf_can_manage_meta_box_suppression() {
+	return current_user_can( 'manage_options' );
+}
+
+/**
+ * Save the current blog's site-wide meta box suppression state.
+ *
+ * @param WP_REST_Request $request Request object.
+ * @return WP_REST_Response|WP_Error
+ */
+function wp_collab_cf_rest_update_meta_box_suppression( WP_REST_Request $request ) {
+	$json_params = $request->get_json_params();
+	if (
+		! is_array( $json_params ) ||
+		array( 'enabled' ) !== array_keys( $json_params ) ||
+		! is_bool( $json_params['enabled'] )
+	) {
+		return new WP_Error(
+			'wp_collab_cf_invalid_suppression_setting',
+			'The enabled setting must be an exact boolean and cannot target a user or blog.',
+			array( 'status' => 400 )
+		);
+	}
+
+	$enabled = $json_params['enabled'];
+	$updated = update_option( 'wp_collab_cf_meta_box_suppression_enabled', $enabled );
+	if ( ! $updated && wp_collab_cf_is_meta_box_suppression_enabled() !== $enabled ) {
+		return new WP_Error(
+			'wp_collab_cf_suppression_update_failed',
+			'The site-wide meta box suppression policy could not be saved.',
+			array( 'status' => 500 )
+		);
+	}
+
+	$response = rest_ensure_response( array( 'enabled' => $enabled ) );
+	$response->header( 'Cache-Control', 'no-store' );
+	return $response;
 }
 
 /**
@@ -543,8 +764,15 @@ function wp_collab_cf_enqueue_scripts( $hook ) {
 		'wp-collab-cf',
 		'wpCollabCf',
 		array(
-			'wsUrl'    => $configured ? WP_COLLAB_CF_WS_URL : '',
-			'tokenUrl' => $configured ? rest_url( 'wp-collab-cf/v1/token' ) : '',
+			'wsUrl'             => $configured ? WP_COLLAB_CF_WS_URL : '',
+			'tokenUrl'          => $configured ? rest_url( 'wp-collab-cf/v1/token' ) : '',
+			'metaBoxSuppression' => wp_collab_cf_can_manage_meta_box_suppression()
+				? array(
+					'canManage' => true,
+					'enabled'   => wp_collab_cf_is_meta_box_suppression_enabled(),
+					'endpoint'  => rest_url( 'wp-collab-cf/v1/meta-box-suppression' ),
+				)
+				: null,
 		)
 	);
 }
