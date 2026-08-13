@@ -113,6 +113,25 @@ npm run build
 
 Copy the `plugin/wp-collab-cf/` directory (with the `build/` output) into `wp-content/plugins/` and activate it.
 
+### Diagnose collaboration compatibility
+
+The plugin exposes a read-only `wpCollabCfDiagnostics` object in the browser
+console on post editor screens. When Gutenberg disables collaboration because
+of configuration, post-type sync support, or an incompatible legacy meta box,
+the plugin automatically prints a sanitized report. To print a fresh report:
+
+```js
+wpCollabCfDiagnostics.log();
+```
+
+The meta box table includes the ID, title, compatibility flag, and—when the
+current user can activate plugins—the likely owning plugin, must-use plugin,
+theme, or WordPress Core source. The report never includes the site signing
+secret, site identifier, room credential, WebSocket subprotocol, or absolute
+server paths. Diagnostics do not mark a meta box as compatible; plugin authors
+must opt in with `__rtc_compatible_meta_box` only after verifying that its data
+model is safe during concurrent editing.
+
 ### 5. Test
 
 Open the same post in two browser tabs. Edits in one tab should appear in the other in real time.

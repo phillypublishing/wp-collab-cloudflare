@@ -42,6 +42,7 @@ jobs:
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
       - run: php -l wp-collab-cf.php
+      - run: php test/rtc-diagnostics.php
 
   config:
     runs-on: ubuntu-latest

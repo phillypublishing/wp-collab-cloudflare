@@ -47,6 +47,10 @@ jobs:
         working-directory: plugin/wp-collab-cf
         run: php -l wp-collab-cf.php
 
+      - name: Test plugin PHP diagnostics
+        working-directory: plugin/wp-collab-cf
+        run: php test/rtc-diagnostics.php
+
       - name: Build and verify reproducible artifact
         env:
           PLUGIN_ARTIFACT_ALLOW_DIRTY: 0

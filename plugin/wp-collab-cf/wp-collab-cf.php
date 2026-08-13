@@ -2,10 +2,12 @@
 /**
  * Plugin Name: WP Collab Cloudflare
  * Description: Routes WordPress 7.0 real-time collaboration through a Cloudflare Workers relay instead of HTTP polling.
- * Version: 0.2.0
+ * Version: 0.3.0
  */
 
 defined( 'ABSPATH' ) || exit;
+
+define( 'WP_COLLAB_CF_VERSION', '0.3.0' );
 
 /**
  * Set your deployed Worker URL, site identifier, and signing secret in
@@ -19,6 +21,230 @@ defined( 'ABSPATH' ) || exit;
 
 add_action( 'admin_enqueue_scripts', 'wp_collab_cf_enqueue_scripts' );
 add_action( 'rest_api_init', 'wp_collab_cf_register_rest_routes' );
+add_filter( 'filter_block_editor_meta_boxes', 'wp_collab_cf_capture_meta_box_diagnostics', PHP_INT_MAX );
+add_action( 'admin_footer-post.php', 'wp_collab_cf_print_diagnostics_data', 99 );
+add_action( 'admin_footer-post-new.php', 'wp_collab_cf_print_diagnostics_data', 99 );
+
+/**
+ * Describe a source file without exposing an absolute server path.
+ *
+ * @param string|false $file Callback source file.
+ * @return array Sanitized source owner.
+ */
+function wp_collab_cf_source_owner_for_file( $file ) {
+	$unknown = array(
+		'ownerType'  => 'unknown',
+		'owner'      => null,
+		'sourceFile' => null,
+	);
+	if ( ! is_string( $file ) || '' === $file ) {
+		return $unknown;
+	}
+
+	$path = wp_normalize_path( $file );
+	$roots = array(
+		'mu-plugin' => defined( 'WPMU_PLUGIN_DIR' ) ? wp_normalize_path( WPMU_PLUGIN_DIR ) : '',
+		'plugin'    => defined( 'WP_PLUGIN_DIR' ) ? wp_normalize_path( WP_PLUGIN_DIR ) : '',
+	);
+	foreach ( $roots as $owner_type => $root ) {
+		$prefix = rtrim( $root, '/' ) . '/';
+		if ( '/' === $prefix || 0 !== strpos( $path, $prefix ) ) {
+			continue;
+		}
+		$relative = substr( $path, strlen( $prefix ) );
+		$segments = explode( '/', $relative );
+		return array(
+			'ownerType'  => $owner_type,
+			'owner'      => $segments[0],
+			'sourceFile' => $relative,
+		);
+	}
+
+	if ( function_exists( 'get_theme_root' ) ) {
+		$theme_root = rtrim( wp_normalize_path( get_theme_root() ), '/' ) . '/';
+		if ( '/' !== $theme_root && 0 === strpos( $path, $theme_root ) ) {
+			$relative = substr( $path, strlen( $theme_root ) );
+			$segments = explode( '/', $relative );
+			return array(
+				'ownerType'  => 'theme',
+				'owner'      => $segments[0],
+				'sourceFile' => $relative,
+			);
+		}
+	}
+
+	$core_root = rtrim( wp_normalize_path( ABSPATH ), '/' ) . '/';
+	if ( 0 === strpos( $path, $core_root ) ) {
+		$relative = substr( $path, strlen( $core_root ) );
+		if ( 0 === strpos( $relative, 'wp-admin/' ) || 0 === strpos( $relative, 'wp-includes/' ) ) {
+			return array(
+				'ownerType'  => 'wordpress-core',
+				'owner'      => 'wordpress-core',
+				'sourceFile' => $relative,
+			);
+		}
+	}
+
+	return $unknown;
+}
+
+/**
+ * Return a callback class label without PHP's anonymous-class source path.
+ *
+ * @param object|string $callback_class Callback object or class name.
+ * @return string Sanitized callback class label.
+ */
+function wp_collab_cf_callback_class_label( $callback_class ) {
+	$class = is_object( $callback_class ) ? get_class( $callback_class ) : (string) $callback_class;
+	if ( is_object( $callback_class ) ) {
+		try {
+			$reflection = new ReflectionClass( $callback_class );
+			if ( $reflection->isAnonymous() ) {
+				return 'anonymous-class';
+			}
+		} catch ( Throwable $error ) {
+			// Fall through to the NUL-delimited anonymous name check.
+		}
+	}
+
+	// Anonymous class names include a NUL-delimited source path in PHP.
+	return false !== strpos( $class, "\0" ) ? 'anonymous-class' : $class;
+}
+
+/**
+ * Identify a meta box callback and its likely owner.
+ *
+ * @param mixed $callback Meta box callback.
+ * @return array Sanitized callback description.
+ */
+function wp_collab_cf_describe_callback( $callback ) {
+	$label      = null;
+	$reflection = null;
+	try {
+		if ( is_string( $callback ) && function_exists( $callback ) ) {
+			$label      = $callback;
+			$reflection = new ReflectionFunction( $callback );
+		} elseif ( is_array( $callback ) && 2 === count( $callback ) ) {
+			$class      = wp_collab_cf_callback_class_label( $callback[0] );
+			$label      = $class . '::' . (string) $callback[1];
+			$reflection = new ReflectionMethod( $callback[0], $callback[1] );
+		} elseif ( $callback instanceof Closure ) {
+			$label      = 'Closure';
+			$reflection = new ReflectionFunction( $callback );
+		} elseif ( is_object( $callback ) && is_callable( $callback ) ) {
+			$label      = wp_collab_cf_callback_class_label( $callback ) . '::__invoke';
+			$reflection = new ReflectionMethod( $callback, '__invoke' );
+		}
+	} catch ( Throwable $error ) {
+		$reflection = null;
+	}
+
+	$source = wp_collab_cf_source_owner_for_file( $reflection ? $reflection->getFileName() : false );
+	$source['callback'] = $label;
+	return $source;
+}
+
+/**
+ * Convert registered meta boxes to a browser-safe diagnostics list.
+ *
+ * @param array  $wp_meta_boxes Global meta box state.
+ * @param string $screen_id     Current editor screen identifier.
+ * @param bool   $include_owner Whether callback ownership may be disclosed.
+ * @return array Sanitized meta box descriptions.
+ */
+function wp_collab_cf_describe_meta_boxes( $wp_meta_boxes, $screen_id, $include_owner ) {
+	$descriptions = array();
+	if ( ! isset( $wp_meta_boxes[ $screen_id ] ) || ! is_array( $wp_meta_boxes[ $screen_id ] ) ) {
+		return $descriptions;
+	}
+
+	foreach ( $wp_meta_boxes[ $screen_id ] as $location => $priorities ) {
+		foreach ( (array) $priorities as $priority => $boxes ) {
+			foreach ( (array) $boxes as $meta_box ) {
+				if (
+					! is_array( $meta_box ) ||
+					empty( $meta_box['title'] ) ||
+					! empty( $meta_box['args']['__back_compat_meta_box'] )
+				) {
+					continue;
+				}
+				$source = $include_owner
+					? wp_collab_cf_describe_callback( isset( $meta_box['callback'] ) ? $meta_box['callback'] : null )
+					: array(
+						'ownerType' => null,
+						'owner'     => null,
+						'sourceFile' => null,
+						'callback'  => null,
+					);
+				$descriptions[] = array_merge(
+					array(
+						'id'            => isset( $meta_box['id'] ) ? (string) $meta_box['id'] : '',
+						'title'         => wp_strip_all_tags( (string) $meta_box['title'] ),
+						'location'      => (string) $location,
+						'priority'      => (string) $priority,
+						'rtcCompatible' => ! empty( $meta_box['args']['__rtc_compatible_meta_box'] ),
+					),
+					$source
+				);
+			}
+		}
+	}
+
+	return $descriptions;
+}
+
+/**
+ * Capture the final meta box compatibility state without changing it.
+ *
+ * @param array $wp_meta_boxes Global meta box state.
+ * @return array Unmodified meta box state.
+ */
+function wp_collab_cf_capture_meta_box_diagnostics( $wp_meta_boxes ) {
+	global $current_screen, $wp_collab_cf_diagnostics_meta_boxes;
+
+	if ( $current_screen && isset( $current_screen->id ) ) {
+		$wp_collab_cf_diagnostics_meta_boxes = wp_collab_cf_describe_meta_boxes(
+			$wp_meta_boxes,
+			$current_screen->id,
+			current_user_can( 'activate_plugins' )
+		);
+	}
+
+	return $wp_meta_boxes;
+}
+
+/**
+ * Print sanitized diagnostics after WordPress and plugins register meta boxes.
+ */
+function wp_collab_cf_print_diagnostics_data() {
+	global $post, $wp_collab_cf_diagnostics_meta_boxes, $wp_version;
+
+	if ( ! wp_script_is( 'wp-collab-cf', 'enqueued' ) && ! wp_script_is( 'wp-collab-cf', 'done' ) ) {
+		return;
+	}
+
+	$post_type = $post instanceof WP_Post ? $post->post_type : null;
+	$report    = array(
+		'wordpressVersion'     => isset( $wp_version ) ? (string) $wp_version : null,
+		'gutenbergVersion'     => defined( 'GUTENBERG_VERSION' ) ? (string) GUTENBERG_VERSION : null,
+		'pluginVersion'        => WP_COLLAB_CF_VERSION,
+		'collaborationAllowed' => function_exists( 'wp_is_collaboration_allowed' ) ? wp_is_collaboration_allowed() : null,
+		'collaborationEnabled' => function_exists( 'wp_is_collaboration_enabled' ) ? wp_is_collaboration_enabled() : null,
+		'cloudflareConfigured' => wp_collab_cf_is_configured(),
+		'postTypeDisabled'     => $post_type && function_exists( 'wp_is_post_type_collaboration_disabled' )
+			? wp_is_post_type_collaboration_disabled( $post_type )
+			: null,
+		'metaBoxes'            => isset( $wp_collab_cf_diagnostics_meta_boxes ) && is_array( $wp_collab_cf_diagnostics_meta_boxes )
+			? $wp_collab_cf_diagnostics_meta_boxes
+			: array(),
+	);
+	$script    = 'window.wpCollabCfDiagnosticsServer = ' . wp_json_encode(
+		$report,
+		JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES
+	) . ';window.dispatchEvent(new Event("wp-collab-cf-diagnostics-ready"));';
+
+	wp_print_inline_script_tag( $script );
+}
 
 /**
  * Return whether all secure collaboration settings are present and valid.
@@ -289,10 +515,6 @@ function wp_collab_cf_rest_issue_credentials( WP_REST_Request $request ) {
 }
 
 function wp_collab_cf_enqueue_scripts( $hook ) {
-	if ( ! wp_collab_cf_is_configured() ) {
-		return;
-	}
-
 	// Only load on the post editor screen.
 	if ( 'post.php' !== $hook && 'post-new.php' !== $hook ) {
 		return;
@@ -316,8 +538,13 @@ function wp_collab_cf_enqueue_scripts( $hook ) {
 		array( 'in_footer' => false )
 	);
 
-	wp_localize_script( 'wp-collab-cf', 'wpCollabCf', array(
-		'wsUrl'    => WP_COLLAB_CF_WS_URL,
-		'tokenUrl' => rest_url( 'wp-collab-cf/v1/token' ),
-	) );
+	$configured = wp_collab_cf_is_configured();
+	wp_localize_script(
+		'wp-collab-cf',
+		'wpCollabCf',
+		array(
+			'wsUrl'    => $configured ? WP_COLLAB_CF_WS_URL : '',
+			'tokenUrl' => $configured ? rest_url( 'wp-collab-cf/v1/token' ) : '',
+		)
+	);
 }

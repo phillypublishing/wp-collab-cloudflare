@@ -47,6 +47,11 @@ developer tools.
 Use a disposable post and two distinct users who can edit it. Keep both editor
 windows visible while running the checks.
 
+If Gutenberg reports that the post uses incompatible plugins, open the browser
+console and run `wpCollabCfDiagnostics.log()`. Record the sanitized blocker and
+meta box tables. Do not mark a reported meta box compatible until its owner has
+verified that concurrent editing cannot lose or overwrite its data.
+
 - Type in editor A and confirm editor B converges; repeat in the other
   direction.
 - Create, reply to, edit, resolve, reopen, and delete a Note. Confirm each

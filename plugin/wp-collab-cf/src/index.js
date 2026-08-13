@@ -6,9 +6,75 @@ import {
 	createProviderStatusBridge,
 	handleConnectionClose,
 } from './connection-policy.mjs';
+import {
+	createRtcDiagnosticsReport,
+	printRtcDiagnostics,
+	shouldAutoLogRtcDiagnostics,
+} from './rtc-diagnostics.mjs';
 import { isSupportedSyncObject } from './sync-object-policy.mjs';
 
 const config = window.wpCollabCf || {};
+
+function currentDiagnosticsReport() {
+	return createRtcDiagnosticsReport( {
+		wp: window.wp,
+		browser: window,
+		server: window.wpCollabCfDiagnosticsServer || {},
+	} );
+}
+
+let lastAutomaticDiagnostics = null;
+function maybeLogRtcDiagnostics() {
+	const report = currentDiagnosticsReport();
+	if ( ! shouldAutoLogRtcDiagnostics( report ) ) {
+		return report;
+	}
+	const signature = JSON.stringify( {
+		blockers: report.blockers,
+		metaBoxes: report.metaBoxes,
+	} );
+	if ( signature !== lastAutomaticDiagnostics ) {
+		lastAutomaticDiagnostics = signature;
+		printRtcDiagnostics( report );
+	}
+	return report;
+}
+
+let diagnosticsScheduled = false;
+let unsubscribeDiagnostics = null;
+function scheduleRtcDiagnostics() {
+	if ( diagnosticsScheduled ) {
+		return;
+	}
+	diagnosticsScheduled = true;
+	window.setTimeout( () => {
+		diagnosticsScheduled = false;
+		const report = maybeLogRtcDiagnostics();
+		if ( report.gates.initialized && unsubscribeDiagnostics ) {
+			unsubscribeDiagnostics();
+			unsubscribeDiagnostics = null;
+		}
+	}, 0 );
+}
+
+window.wpCollabCfDiagnostics = Object.freeze( {
+	report: currentDiagnosticsReport,
+	log: () => {
+		const report = currentDiagnosticsReport();
+		printRtcDiagnostics( report );
+		return report;
+	},
+} );
+window.addEventListener(
+	'wp-collab-cf-diagnostics-ready',
+	scheduleRtcDiagnostics
+);
+window._wpLoadBlockEditor?.then( () => {
+	scheduleRtcDiagnostics();
+} );
+unsubscribeDiagnostics =
+	window.wp?.data?.subscribe?.( scheduleRtcDiagnostics, 'core/edit-post' ) ||
+	null;
 
 function noOpProvider() {
 	return { destroy: () => {}, on: () => {} };
