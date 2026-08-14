@@ -2,12 +2,12 @@
 /**
  * Plugin Name: WP Collab Cloudflare
  * Description: Routes WordPress 7.0 real-time collaboration through a Cloudflare Workers relay instead of HTTP polling.
- * Version: 0.5.0
+ * Version: 0.5.1
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WP_COLLAB_CF_VERSION', '0.5.0' );
+define( 'WP_COLLAB_CF_VERSION', '0.5.1' );
 
 require_once __DIR__ . '/includes/compatibility/memberpress-1-12-17.php';
 require_once __DIR__ . '/includes/compatibility/yoast-seo-premium-28-2.php';
@@ -24,6 +24,8 @@ require_once __DIR__ . '/includes/compatibility/meta-box-policy.php';
  */
 
 add_action( 'admin_enqueue_scripts', 'wp_collab_cf_enqueue_scripts' );
+add_action( 'admin_menu', 'wp_collab_cf_register_settings_page' );
+add_action( 'admin_post_wp_collab_cf_update_meta_box_suppression', 'wp_collab_cf_handle_meta_box_suppression_settings_update' );
 add_action( 'rest_api_init', 'wp_collab_cf_register_rest_routes' );
 add_filter( 'filter_block_editor_meta_boxes', 'wp_collab_cf_filter_block_editor_meta_boxes', 90 );
 add_filter( 'filter_block_editor_meta_boxes', 'wp_collab_cf_capture_meta_box_diagnostics', PHP_INT_MAX );
@@ -81,6 +83,123 @@ function wp_collab_cf_get_suppressed_meta_box_ids() {
 function wp_collab_cf_is_meta_box_suppression_enabled() {
 	$enabled = get_option( 'wp_collab_cf_meta_box_suppression_enabled', false );
 	return true === $enabled || 1 === $enabled || '1' === $enabled;
+}
+
+/**
+ * Return the administrator-facing settings URL for the current site.
+ *
+ * @return string
+ */
+function wp_collab_cf_get_settings_page_url() {
+	return admin_url( 'options-general.php?page=wp-collab-cf' );
+}
+
+/**
+ * Register the site-wide collaboration settings screen.
+ */
+function wp_collab_cf_register_settings_page() {
+	add_options_page(
+		'Real-time Collaboration',
+		'Real-time Collaboration',
+		'manage_options',
+		'wp-collab-cf',
+		'wp_collab_cf_render_settings_page'
+	);
+}
+
+/**
+ * Render the site-wide legacy meta-box policy control.
+ */
+function wp_collab_cf_render_settings_page() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( 'You are not allowed to manage real-time collaboration settings.' );
+	}
+
+	$enabled = wp_collab_cf_is_meta_box_suppression_enabled();
+	?>
+	<div class="wrap">
+		<h1>Real-time Collaboration</h1>
+		<?php if ( isset( $_GET['settings-updated'] ) && '1' === $_GET['settings-updated'] ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<div class="notice notice-success is-dismissible"><p>Settings saved.</p></div>
+		<?php endif; ?>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<input type="hidden" name="action" value="wp_collab_cf_update_meta_box_suppression">
+			<?php wp_nonce_field( 'wp_collab_cf_update_meta_box_suppression' ); ?>
+			<table class="form-table" role="presentation">
+				<tr>
+					<th scope="row">Legacy meta-box suppression</th>
+					<td>
+						<label>
+							<input type="checkbox" name="enabled" value="1"<?php checked( $enabled ); ?>>
+							Suppress configured legacy meta boxes site-wide
+						</label>
+						<p class="description">
+							When enabled, configured meta boxes will not render or submit for anyone on this site. Reload any open editors after changing this setting.
+						</p>
+						<p class="description">
+							This plugin does not directly change saved meta, but third-party save handlers may react to missing fields. Validate each compatibility adapter before rollout.
+						</p>
+					</td>
+				</tr>
+			</table>
+			<?php submit_button(); ?>
+		</form>
+	</div>
+	<?php
+}
+
+/**
+ * Persist an exact site-wide policy boolean.
+ *
+ * @param bool $enabled Whether suppression is enabled.
+ * @return bool|WP_Error Saved value or an error.
+ */
+function wp_collab_cf_update_meta_box_suppression_option( $enabled ) {
+	if ( ! is_bool( $enabled ) ) {
+		return new WP_Error(
+			'wp_collab_cf_invalid_suppression_setting',
+			'The enabled setting must be an exact boolean and cannot target a user or blog.',
+			array( 'status' => 400 )
+		);
+	}
+
+	$updated = update_option( 'wp_collab_cf_meta_box_suppression_enabled', $enabled );
+	if ( ! $updated && wp_collab_cf_is_meta_box_suppression_enabled() !== $enabled ) {
+		return new WP_Error(
+			'wp_collab_cf_suppression_update_failed',
+			'The site-wide meta box suppression policy could not be saved.',
+			array( 'status' => 500 )
+		);
+	}
+
+	return $enabled;
+}
+
+/**
+ * Save the site-wide policy from Settings > Real-time Collaboration.
+ */
+function wp_collab_cf_handle_meta_box_suppression_settings_update() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( 'You are not allowed to manage real-time collaboration settings.', '', array( 'response' => 403 ) );
+	}
+	check_admin_referer( 'wp_collab_cf_update_meta_box_suppression' );
+
+	$enabled = false;
+	if ( isset( $_POST['enabled'] ) ) {
+		$value = wp_unslash( $_POST['enabled'] );
+		if ( ! is_string( $value ) || '1' !== $value ) {
+			wp_die( 'The suppression setting was invalid.', '', array( 'response' => 400 ) );
+		}
+		$enabled = true;
+	}
+
+	$result = wp_collab_cf_update_meta_box_suppression_option( $enabled );
+	if ( is_wp_error( $result ) ) {
+		wp_die( esc_html( $result->get_error_message() ), '', array( 'response' => 500 ) );
+	}
+
+	wp_safe_redirect( add_query_arg( 'settings-updated', '1', wp_collab_cf_get_settings_page_url() ) );
+	exit;
 }
 
 /**
@@ -728,14 +847,9 @@ function wp_collab_cf_rest_update_meta_box_suppression( WP_REST_Request $request
 		);
 	}
 
-	$enabled = $json_params['enabled'];
-	$updated = update_option( 'wp_collab_cf_meta_box_suppression_enabled', $enabled );
-	if ( ! $updated && wp_collab_cf_is_meta_box_suppression_enabled() !== $enabled ) {
-		return new WP_Error(
-			'wp_collab_cf_suppression_update_failed',
-			'The site-wide meta box suppression policy could not be saved.',
-			array( 'status' => 500 )
-		);
+	$enabled = wp_collab_cf_update_meta_box_suppression_option( $json_params['enabled'] );
+	if ( is_wp_error( $enabled ) ) {
+		return $enabled;
 	}
 
 	$response = rest_ensure_response( array( 'enabled' => $enabled ) );
@@ -800,19 +914,20 @@ function wp_collab_cf_enqueue_scripts( $hook ) {
 	);
 
 	$configured = wp_collab_cf_is_configured();
+	$can_manage = wp_collab_cf_can_manage_meta_box_suppression();
 	wp_localize_script(
 		'wp-collab-cf',
 		'wpCollabCf',
 		array(
 			'wsUrl'             => $configured ? WP_COLLAB_CF_WS_URL : '',
 			'tokenUrl'          => $configured ? rest_url( 'wp-collab-cf/v1/token' ) : '',
-			'metaBoxSuppression' => wp_collab_cf_can_manage_meta_box_suppression()
-				? array(
-					'canManage' => true,
-					'enabled'   => wp_collab_cf_is_meta_box_suppression_enabled(),
-					'endpoint'  => rest_url( 'wp-collab-cf/v1/meta-box-suppression' ),
-				)
-				: null,
+			'metaBoxSuppression' => array(
+				'canManage'  => $can_manage,
+				'enabled'    => wp_collab_cf_is_meta_box_suppression_enabled(),
+				'settingsUrl' => $can_manage
+					? wp_collab_cf_get_settings_page_url()
+					: '',
+			),
 		)
 	);
 }

@@ -19,6 +19,7 @@ $rtc_options = array();
 $rtc_registered_routes = array();
 $rtc_current_user_can_manage_options = true;
 $rtc_update_option_should_fail = false;
+$rtc_options_pages = array();
 
 function add_action( $hook, $callback, $priority = 10, $accepted_args = 1 ) {
 	global $rtc_registered_actions;
@@ -58,6 +59,30 @@ function update_option( $name, $value ) {
 function register_rest_route( $namespace, $route, $args ) {
 	global $rtc_registered_routes;
 	$rtc_registered_routes[] = compact( 'namespace', 'route', 'args' );
+}
+function add_options_page( $page_title, $menu_title, $capability, $menu_slug, $callback ) {
+	global $rtc_options_pages;
+	$rtc_options_pages[] = compact( 'page_title', 'menu_title', 'capability', 'menu_slug', 'callback' );
+}
+function admin_url( $path = '' ) {
+	return 'https://example.test/wp-admin/' . ltrim( $path, '/' );
+}
+function esc_url( $value ) {
+	return htmlspecialchars( $value, ENT_QUOTES, 'UTF-8' );
+}
+function esc_html( $value ) {
+	return htmlspecialchars( $value, ENT_QUOTES, 'UTF-8' );
+}
+function wp_nonce_field( $action ) {
+	echo '<input type="hidden" name="_wpnonce" value="nonce-for-' . esc_html( $action ) . '">';
+}
+function checked( $checked ) {
+	if ( $checked ) {
+		echo ' checked="checked"';
+	}
+}
+function submit_button( $text = 'Save Changes' ) {
+	echo '<button type="submit">' . esc_html( $text ) . '</button>';
 }
 function rest_ensure_response( $data ) {
 	return new WP_REST_Response( $data );
@@ -421,5 +446,50 @@ $already_disabled = wp_collab_cf_rest_update_meta_box_suppression(
 	new WP_REST_Request( array( 'enabled' => false ) )
 );
 rtc_diagnostics_assert_same( array( 'enabled' => false ), $already_disabled->get_data(), 'An idempotent option write must report the current state.' );
+
+$settings_menu_hooks = array_values(
+	array_filter(
+		$rtc_registered_actions,
+		function ( $registration ) {
+			return 'admin_menu' === $registration['hook']
+				&& 'wp_collab_cf_register_settings_page' === $registration['callback'];
+		}
+	)
+);
+rtc_diagnostics_assert_same( 1, count( $settings_menu_hooks ), 'The Settings page must be registered once.' );
+$settings_update_hooks = array_values(
+	array_filter(
+		$rtc_registered_actions,
+		function ( $registration ) {
+			return 'admin_post_wp_collab_cf_update_meta_box_suppression' === $registration['hook']
+				&& 'wp_collab_cf_handle_meta_box_suppression_settings_update' === $registration['callback'];
+		}
+	)
+);
+rtc_diagnostics_assert_same( 1, count( $settings_update_hooks ), 'The Settings form handler must be registered once.' );
+
+wp_collab_cf_register_settings_page();
+rtc_diagnostics_assert_same( 1, count( $rtc_options_pages ), 'The Settings submenu must be added once.' );
+rtc_diagnostics_assert_same( 'Real-time Collaboration', $rtc_options_pages[0]['page_title'], 'The Settings page title drifted.' );
+rtc_diagnostics_assert_same( 'manage_options', $rtc_options_pages[0]['capability'], 'The Settings page must remain administrator-only.' );
+rtc_diagnostics_assert_same( 'wp-collab-cf', $rtc_options_pages[0]['menu_slug'], 'The Settings page slug drifted.' );
+rtc_diagnostics_assert_same(
+	'https://example.test/wp-admin/options-general.php?page=wp-collab-cf',
+	wp_collab_cf_get_settings_page_url(),
+	'The editor must link to the dedicated Settings page.'
+);
+
+$rtc_options['wp_collab_cf_meta_box_suppression_enabled'] = true;
+$_GET['settings-updated'] = '1';
+ob_start();
+wp_collab_cf_render_settings_page();
+$settings_html = ob_get_clean();
+unset( $_GET['settings-updated'] );
+rtc_diagnostics_assert_same( true, false !== strpos( $settings_html, '<h1>Real-time Collaboration</h1>' ), 'The Settings page heading is missing.' );
+rtc_diagnostics_assert_same( true, false !== strpos( $settings_html, 'action="https://example.test/wp-admin/admin-post.php"' ), 'The Settings form must use admin-post.php.' );
+rtc_diagnostics_assert_same( true, false !== strpos( $settings_html, 'name="action" value="wp_collab_cf_update_meta_box_suppression"' ), 'The Settings form action is missing.' );
+rtc_diagnostics_assert_same( true, false !== strpos( $settings_html, 'name="enabled" value="1" checked="checked"' ), 'The enabled site-wide option must render checked.' );
+rtc_diagnostics_assert_same( true, false !== strpos( $settings_html, 'will not render or submit for anyone on this site' ), 'The site-wide safety warning is missing.' );
+rtc_diagnostics_assert_same( true, false !== strpos( $settings_html, 'Settings saved.' ), 'The Settings success notice is missing.' );
 
 echo "RTC diagnostics PHP contract passed.\n";

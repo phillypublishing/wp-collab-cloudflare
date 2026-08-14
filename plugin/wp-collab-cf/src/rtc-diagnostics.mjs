@@ -109,6 +109,7 @@ function normalizeCompatibilityAdapters( value ) {
 			reason: diagnosticString( yoast.reason ),
 			coreVersion: diagnosticString( yoast.coreVersion ),
 			premiumVersion: diagnosticString( yoast.premiumVersion ),
+			newsVersion: diagnosticString( yoast.newsVersion ),
 			ownerFilterObserved: yoast.ownerFilterObserved === true,
 			ownerFilterSuppressed: yoast.ownerFilterSuppressed === true,
 			emojiPickerDisabled: yoast.emojiPickerDisabled === true,

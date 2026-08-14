@@ -1,8 +1,8 @@
 <?php
 
 $mode = isset( $argv[1] ) ? $argv[1] : '';
-if ( ! in_array( $mode, array( 'absent', 'mismatch' ), true ) ) {
-	fwrite( STDERR, "Usage: php compatibility-version-policy.php absent|mismatch\n" );
+if ( ! in_array( $mode, array( 'absent', 'mismatch', 'news-mismatch', 'news-missing' ), true ) ) {
+	fwrite( STDERR, "Usage: php compatibility-version-policy.php absent|mismatch|news-mismatch|news-missing\n" );
 	exit( 2 );
 }
 
@@ -13,6 +13,15 @@ if ( 'mismatch' === $mode ) {
 	define( 'WPSEO_VERSION', '28.2.1' );
 	define( 'WPSEO_PREMIUM_VERSION', '28.3' );
 	define( 'MEPR_VERSION', '1.12.18' );
+} elseif ( 'news-mismatch' === $mode ) {
+	define( 'WPSEO_VERSION', '28.2' );
+	define( 'WPSEO_PREMIUM_VERSION', '28.2' );
+	define( 'WPSEO_NEWS_VERSION', '13.4' );
+	define( 'MEPR_VERSION', '1.12.17' );
+} elseif ( 'news-missing' === $mode ) {
+	define( 'WPSEO_VERSION', '28.2' );
+	define( 'WPSEO_PREMIUM_VERSION', '28.2' );
+	define( 'MEPR_VERSION', '1.12.17' );
 }
 
 $version_filters = array();
@@ -50,8 +59,12 @@ function get_option( $name, $default = false ) {
 	if ( 'wp_collab_cf_meta_box_suppression_enabled' === $name ) {
 		return true;
 	}
-	if ( 'active_plugins' === $name && 'mismatch' === $mode ) {
-		return array( 'wordpress-seo/wp-seo.php', 'wordpress-seo-premium/wp-seo-premium.php' );
+	if ( 'active_plugins' === $name && in_array( $mode, array( 'mismatch', 'news-mismatch', 'news-missing' ), true ) ) {
+		$plugins = array( 'wordpress-seo/wp-seo.php', 'wordpress-seo-premium/wp-seo-premium.php' );
+		if ( in_array( $mode, array( 'news-mismatch', 'news-missing' ), true ) ) {
+			$plugins[] = 'wordpress-seo-news/wpseo-news.php';
+		}
+		return $plugins;
 	}
 	return $default;
 }
@@ -93,25 +106,31 @@ $post = (object) array( 'ID' => 42, 'post_type' => 'post', 'post_content' => 'sa
 
 require dirname( __DIR__ ) . '/wp-collab-cf.php';
 
-if ( 'mismatch' === $mode ) {
+if ( in_array( $mode, array( 'mismatch', 'news-mismatch', 'news-missing' ), true ) ) {
 	wp_collab_cf_yoast_filter_editor_features( true );
 }
 $filtered = wp_collab_cf_filter_block_editor_meta_boxes( array() );
 $diagnostics = wp_collab_cf_get_compatibility_adapter_diagnostics();
+if ( ! in_array( $mode, array( 'news-mismatch', 'news-missing' ), true ) ) {
+	version_policy_assert_same(
+		'mismatch' === $mode ? 'version_mismatch' : 'plugin_absent',
+		$diagnostics['memberpress']['reason'],
+		'MemberPress did not fail closed for the version policy.'
+	);
+}
 version_policy_assert_same(
-	'mismatch' === $mode ? 'version_mismatch' : 'plugin_absent',
-	$diagnostics['memberpress']['reason'],
-	'MemberPress did not fail closed for the version policy.'
-);
-version_policy_assert_same(
-	'mismatch' === $mode ? 'version_mismatch' : 'plugin_absent',
+	in_array( $mode, array( 'news-mismatch', 'news-missing' ), true )
+		? 'unsupported_addon'
+		: ( 'mismatch' === $mode ? 'version_mismatch' : 'plugin_absent' ),
 	$diagnostics['yoast']['reason'],
 	'Yoast did not fail closed for the version policy.'
 );
-version_policy_assert_same( false, $diagnostics['memberpress']['applied'], 'MemberPress must not apply outside the exact version.' );
+if ( ! in_array( $mode, array( 'news-mismatch', 'news-missing' ), true ) ) {
+	version_policy_assert_same( false, $diagnostics['memberpress']['applied'], 'MemberPress must not apply outside the exact version.' );
+}
 version_policy_assert_same( false, $diagnostics['yoast']['applied'], 'Yoast must not apply outside the exact version pair.' );
 version_policy_assert_same(
-	'mismatch' === $mode,
+	in_array( $mode, array( 'mismatch', 'news-mismatch', 'news-missing' ), true ),
 	isset( $filtered['post']['normal']['high']['wp_collab_cf_yoast_compatibility_blocker'] ),
 	'Only active version drift needs the synthetic Yoast blocker.'
 );

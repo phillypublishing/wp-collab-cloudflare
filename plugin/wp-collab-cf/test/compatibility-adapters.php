@@ -5,6 +5,7 @@ define( 'WP_PLUGIN_DIR', '/wordpress/wp-content/plugins' );
 define( 'WPMU_PLUGIN_DIR', '/wordpress/wp-content/mu-plugins' );
 define( 'WPSEO_VERSION', '28.2' );
 define( 'WPSEO_PREMIUM_VERSION', '28.2' );
+define( 'WPSEO_NEWS_VERSION', '13.3' );
 define( 'MEPR_VERSION', '1.12.17' );
 
 error_reporting( E_ALL );
@@ -353,12 +354,14 @@ compat_assert_same(
 	'The exact Core and Premium basenames are allowed.'
 );
 compat_assert_same(
-	array( 'unsupported' ),
+	array(),
 	wp_collab_cf_yoast_find_unsupported_addons(
-		array_merge( $compat_options['active_plugins'], array( 'yoast-news-seo/yoast-news-seo.php' ) )
+		array_merge( $compat_options['active_plugins'], array( 'wordpress-seo-news/wpseo-news.php' ) )
 	),
-	'An obvious active Yoast add-on must be rejected without exposing its basename.'
+	'The exact News main plugin file is handled by its own version policy.'
 );
+compat_assert_true( wp_collab_cf_yoast_news_version_supported( '13.3' ), 'The characterized Yoast News version should be supported.' );
+compat_assert_same( false, wp_collab_cf_yoast_news_version_supported( '13.4' ), 'Yoast News version drift must be rejected.' );
 compat_assert_same(
 	array( 'unsupported' ),
 	wp_collab_cf_yoast_find_unsupported_addons(
@@ -555,10 +558,37 @@ foreach ( array( 'direct-protected', 'direct-content-suggestion', 'nested-protec
 $post->post_content = 'safe';
 
 compat_reset_adapter_state();
-$compat_options['active_plugins'][] = 'yoast-news-seo/yoast-news-seo.php';
-compat_assert_same( true, wp_collab_cf_yoast_filter_editor_features( true ), 'An unsupported Yoast add-on must keep owner UI enabled.' );
+$compat_options['active_plugins'][] = 'wordpress-seo-news/wpseo-news.php';
+$compat_scripts = new Compat_Dependencies();
+compat_assert_true(
+	in_array( 'wpseo-news-editor', wp_collab_cf_yoast_denied_script_handles(), true ),
+	'The characterized News editor handle must remain in the denied graph.'
+);
+foreach ( wp_collab_cf_yoast_denied_script_handles() as $handle ) {
+	$compat_scripts->add( $handle );
+}
+$compat_styles = new Compat_Dependencies();
+foreach ( wp_collab_cf_yoast_denied_style_handles() as $handle ) {
+	$compat_styles->add( $handle );
+}
+compat_assert_same( false, wp_collab_cf_yoast_filter_editor_features( true ), 'Exact Yoast News 13.3 must use the Core owner suppression decision.' );
+wp_collab_cf_yoast_prune_editor_assets();
 $filtered = wp_collab_cf_filter_block_editor_meta_boxes( compat_registry( array() ) );
-compat_assert_same( 'unsupported_addon', wp_collab_cf_get_compatibility_adapter_diagnostics()['yoast']['reason'], 'Unsupported add-ons need a stable reason.' );
+$news_diagnostics = wp_collab_cf_get_compatibility_adapter_diagnostics()['yoast'];
+compat_assert_same( 'applied', $news_diagnostics['reason'], 'Exact Yoast News 13.3 should apply with the characterized Core and Premium pair.' );
+compat_assert_same( '13.3', $news_diagnostics['newsVersion'], 'Yoast News diagnostics must report only the exact active version.' );
+compat_assert_true( in_array( 'wpseo-news-editor', $news_diagnostics['removedScriptHandles'], true ), 'The News editor bundle must be pruned with its missing owner surface.' );
+array_pop( $compat_options['active_plugins'] );
+
+compat_reset_adapter_state();
+$compat_options['active_plugins'][] = 'wordpress-seo-news/wpseo-news.php';
+$compat_options['active_plugins'][] = 'custom-news/wpseo-news.php';
+compat_assert_same( true, wp_collab_cf_yoast_filter_editor_features( true ), 'Multiple News main-file candidates must fail closed.' );
+$filtered = wp_collab_cf_filter_block_editor_meta_boxes( compat_registry( array() ) );
+$duplicate_news_diagnostics = wp_collab_cf_get_compatibility_adapter_diagnostics()['yoast'];
+compat_assert_same( 'unsupported_addon', $duplicate_news_diagnostics['reason'], 'Multiple News candidates must be rejected as ambiguous.' );
+compat_assert_true( isset( $filtered['post']['normal']['high']['wp_collab_cf_yoast_compatibility_blocker'] ), 'Ambiguous News candidates must keep Gutenberg exclusive.' );
+array_pop( $compat_options['active_plugins'] );
 array_pop( $compat_options['active_plugins'] );
 
 compat_reset_adapter_state();

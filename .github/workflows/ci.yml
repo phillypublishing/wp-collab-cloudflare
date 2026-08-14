@@ -53,6 +53,8 @@ jobs:
       - run: php test/compatibility-adapters.php
       - run: php test/compatibility-version-policy.php absent
       - run: php test/compatibility-version-policy.php mismatch
+      - run: php test/compatibility-version-policy.php news-mismatch
+      - run: php test/compatibility-version-policy.php news-missing
 
   config:
     runs-on: ubuntu-latest

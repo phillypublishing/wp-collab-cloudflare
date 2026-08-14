@@ -164,12 +164,13 @@ generic late registry removal:
   `MeprAppCtrl::unauthorized_meta_box` callback. A version or callback mismatch
   leaves the complete box present so Gutenberg keeps exclusive editing.
 - `wpseo_meta` is supported only for the exact Yoast SEO Core 28.2 + Premium
-  28.2 pair. The adapter uses Yoast's post-type owner filter before meta-box
+  28.2 pair, optionally with Yoast SEO: News 13.3. The adapter uses Yoast's post-type owner filter before meta-box
   registration, rejects obvious active Yoast add-ons and protected Yoast block
   content (including uncertain synced-pattern graphs), and removes the exact
-  characterized editor asset graph. It never falls back to generic late
-  removal. Core FAQ, How-to, breadcrumb, Premium dynamic-block, redirect,
-  frontend SEO/schema, indexable, and save integrations remain available.
+  characterized editor asset graph, including `wpseo-news-editor` when News is
+  active. It never falls back to generic late removal. Core FAQ, How-to,
+  breadcrumb, Premium dynamic-block, redirect, News sitemap/schema, frontend
+  SEO/schema, indexable, and save integrations remain available.
 
 These adapters are fail-closed. Unsupported versions, callbacks, add-ons,
 asset dependencies, protected blocks, or uncertain synced content leave RTC
@@ -177,17 +178,19 @@ blocked after Yoast consults its owner filter. A remaining real box also keeps
 Gutenberg exclusive; an absent box with an unobserved owner filter means Yoast
 is inactive on that screen and does not add a synthetic blocker. Yoast Premium
 prominent-word relationships may remain stale after a content-only
-collaborative edit even when the adapter applies; validate that known
-limitation before production rollout. Disabling the site-wide option and
-reloading restores the normal vendor UI.
+collaborative edit, and News stock-ticker/exclusion values remain frozen while
+its editor UI is suppressed. Validate those known limitations before production
+rollout. Disabling the site-wide option and reloading restores the normal vendor
+UI.
 
-The policy defaults to off. A user with `manage_options` can enable it from the
-post editor's **Real-time collaboration** document-settings panel. Enabling it
-is site-wide for the current WordPress blog: the selected boxes no longer
-render or submit for any user. The control refuses changes while the current
-post is dirty or saving, saves through cookie-authenticated REST with the Core
-`wp_rest` nonce, and reloads after a successful change. Disable the policy to
-restore normal rendering and Gutenberg's compatibility blockade.
+The policy defaults to off. A user with `manage_options` can enable it from
+**Settings → Real-time Collaboration**. Enabling it is site-wide for the current
+WordPress blog: the selected boxes no longer render or submit for any user.
+Every post editor shows the current policy as read-only status; administrators
+also receive a link to the Settings page. Reload open editors after a change.
+The existing cookie-authenticated REST endpoint remains available for controlled
+automation. Disable the policy to restore normal rendering and Gutenberg's
+compatibility blockade.
 
 `wpCollabCfDiagnostics.report().metaBoxSuppression` reports the configured,
 matched, suppressed, unmatched, and remaining blocker IDs plus enabled,

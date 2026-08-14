@@ -61,6 +61,8 @@ jobs:
           php test/compatibility-adapters.php
           php test/compatibility-version-policy.php absent
           php test/compatibility-version-policy.php mismatch
+          php test/compatibility-version-policy.php news-mismatch
+          php test/compatibility-version-policy.php news-missing
 
       - name: Build and verify reproducible artifact
         env:
