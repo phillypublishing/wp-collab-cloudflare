@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { Miniflare, NoOpLog } from "miniflare";
 import WebSocket from "ws";
+import YProvider from "y-partyserver/provider";
 import * as Y from "yjs";
 
 const workerRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -139,6 +140,75 @@ async function connect(runtime, lifetimeSeconds = 30) {
   return { socket, close };
 }
 
+function createAuthenticatedWebSocket(issuedTokens) {
+  return class AuthenticatedWebSocket extends WebSocket {
+    constructor(address, protocols = []) {
+      const url = new URL(address);
+      const token = url.searchParams.get("token");
+      if (!token) {
+        throw new Error("WebSocket credential is missing");
+      }
+      url.searchParams.delete("token");
+      issuedTokens.push(token);
+      const requestedProtocols = Array.isArray(protocols)
+        ? protocols
+        : [protocols];
+      super(
+        url,
+        [
+          ...requestedProtocols,
+          "wp-collab-v1",
+          `wp-collab-token.${token}`,
+        ],
+        { origin }
+      );
+    }
+  };
+}
+
+function waitForProviderConnections(provider, expectedCount) {
+  return new Promise((resolve, reject) => {
+    let connectionCount = 0;
+    const timeout = setTimeout(() => {
+      provider.off("status", onStatus);
+      reject(new Error("timed out waiting for provider reconnect"));
+    }, 12_000);
+    const onStatus = ({ status }) => {
+      if (status !== "connected") {
+        return;
+      }
+      connectionCount += 1;
+      if (connectionCount >= expectedCount) {
+        clearTimeout(timeout);
+        provider.off("status", onStatus);
+        resolve();
+      }
+    };
+    provider.on("status", onStatus);
+  });
+}
+
+function waitForProviderSync(provider) {
+  if (provider.synced) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      provider.off("sync", onSync);
+      reject(new Error("timed out waiting for provider sync"));
+    }, 5_000);
+    const onSync = (isSynced) => {
+      if (!isSynced) {
+        return;
+      }
+      clearTimeout(timeout);
+      provider.off("sync", onSync);
+      resolve();
+    };
+    provider.on("sync", onSync);
+  });
+}
+
 function encodeVarUint(value) {
   const bytes = [];
   let remaining = value;
@@ -219,7 +289,7 @@ async function closeSocket(socket, close) {
   await close;
 }
 
-test("workerd enforces room capacity and authentication-expiry alarms", async (t) => {
+test("workerd enforces room capacity", async (t) => {
   const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-runtime-"));
   const runtime = createRuntime(persistPath, {
     COLLAB_MAX_CONNECTIONS_PER_ROOM: "1",
@@ -235,13 +305,118 @@ test("workerd enforces room capacity and authentication-expiry alarms", async (t
   assert.equal(resourceCode, 4008);
   await closeSocket(first.socket, first.close);
 
-  const expiring = await connect(runtime, 1);
-  const [expiryCode] = await expiring.close;
-  assert.equal(expiryCode, 4001);
+});
 
-  const refreshed = await connect(runtime);
-  assert.equal(refreshed.socket.readyState, WebSocket.OPEN);
-  await closeSocket(refreshed.socket, refreshed.close);
+test("workerd keeps a session alive past grant expiry and closes at the session timeout", async (t) => {
+  const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-session-"));
+  const runtime = createRuntime(persistPath, {
+    COLLAB_CONNECTION_TIMEOUT_SECONDS: "4",
+  });
+  t.after(async () => {
+    await runtime.dispose();
+    await rm(persistPath, { recursive: true, force: true });
+  });
+
+  const established = await connect(runtime, 2);
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  assert.equal(
+    established.socket.readyState,
+    WebSocket.OPEN,
+    "an expired connection grant must not remove the established session"
+  );
+
+  const peer = await connect(runtime);
+  const source = new Y.Doc();
+  source.getText("content").insert(0, "relayed after grant expiry");
+  established.socket.send(syncMessage(2, Y.encodeStateAsUpdate(source)));
+  const updatePromise = waitForSyncUpdate(peer.socket);
+  const peerState = new Y.Doc();
+  peer.socket.send(syncMessage(0, Y.encodeStateVector(peerState)));
+  Y.applyUpdate(peerState, await updatePromise);
+  assert.equal(peerState.getText("content").toString(), "relayed after grant expiry");
+
+  const [sessionCode] = await established.close;
+  assert.equal(sessionCode, 4001);
+
+  assert.equal(
+    peer.socket.readyState,
+    WebSocket.OPEN,
+    "the later session must survive the earlier session's alarm"
+  );
+  peerState.getText("content").insert(
+    peerState.getText("content").length,
+    " and after the earlier session timeout"
+  );
+  peer.socket.send(syncMessage(2, Y.encodeStateAsUpdate(peerState)));
+  const observer = await connect(runtime);
+  const observerUpdate = waitForSyncUpdate(observer.socket);
+  const observerState = new Y.Doc();
+  observer.socket.send(syncMessage(0, Y.encodeStateVector(observerState)));
+  Y.applyUpdate(observerState, await observerUpdate);
+  assert.equal(
+    observerState.getText("content").toString(),
+    "relayed after grant expiry and after the earlier session timeout"
+  );
+
+  const [peerSessionCode] = await peer.close;
+  assert.equal(peerSessionCode, 4001);
+  source.destroy();
+  peerState.destroy();
+  observerState.destroy();
+  await closeSocket(observer.socket, observer.close);
+});
+
+test("y-partyserver reconnects after a real session timeout with a fresh grant", async (t) => {
+  const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-provider-"));
+  const runtime = createRuntime(persistPath, {
+    COLLAB_CONNECTION_TIMEOUT_SECONDS: "3",
+  });
+  const issuedTokens = [];
+  const providerDocument = new Y.Doc();
+  const baseUrl = await runtime.ready;
+  const provider = new YProvider(baseUrl.host, room, providerDocument, {
+    connect: false,
+    disableBc: true,
+    maxBackoffTime: 100,
+    params: async () => ({ token: await mintToken(1) }),
+    party: "collaboration",
+    protocol: baseUrl.protocol === "https:" ? "wss" : "ws",
+    WebSocketPolyfill: createAuthenticatedWebSocket(issuedTokens),
+  });
+  t.after(async () => {
+    provider.destroy();
+    providerDocument.destroy();
+    await runtime.dispose();
+    await rm(persistPath, { recursive: true, force: true });
+  });
+
+  const reconnected = waitForProviderConnections(provider, 2);
+  await provider.connect();
+  await reconnected;
+  await waitForProviderSync(provider);
+
+  assert.ok(issuedTokens.length >= 2);
+  assert.notEqual(
+    issuedTokens[0],
+    issuedTokens.at(-1),
+    "the reconnect must obtain a fresh credential"
+  );
+  assert.equal(provider.wsconnected, true);
+
+  providerDocument
+    .getText("content")
+    .insert(0, "converged after session timeout");
+  const peer = await connect(runtime);
+  const updatePromise = waitForSyncUpdate(peer.socket);
+  const peerDocument = new Y.Doc();
+  peer.socket.send(syncMessage(0, Y.encodeStateVector(peerDocument)));
+  Y.applyUpdate(peerDocument, await updatePromise);
+  assert.equal(
+    peerDocument.getText("content").toString(),
+    "converged after session timeout"
+  );
+  peerDocument.destroy();
+  await closeSocket(peer.socket, peer.close);
 });
 
 test("workerd does not retain Yjs state after a runtime restart", async (t) => {

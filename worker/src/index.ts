@@ -4,7 +4,6 @@ import type { Connection, ConnectionContext, WSMessage } from "partyserver";
 import * as Y from "yjs";
 
 import {
-  AUTH_EXPIRY_HEADER,
   AuthError,
   getAuthExpiryDelay,
   parseAuthKeys,
@@ -30,9 +29,10 @@ import {
   recordResourceLimit,
 } from "./observability.js";
 
-const AUTH_EXPIRY_STATE_KEY = "__wpCollabAuthExpires";
+const SESSION_EXPIRY_STATE_KEY = "__wpCollabSessionExpires";
+const LEGACY_AUTH_EXPIRY_STATE_KEY = "__wpCollabAuthExpires";
 const RATE_STATE_KEY = "__wpCollabRateWindow";
-const AUTH_EXPIRED_CLOSE_CODE = 4001;
+const SESSION_EXPIRED_CLOSE_CODE = 4001;
 const RESOURCE_LIMIT_CLOSE_CODE = 4008;
 type RateState = {
   windowStartedAt: number;
@@ -40,7 +40,8 @@ type RateState = {
   bytesInWindow: number;
 };
 type CollaborationConnectionState = Record<string, unknown> & {
-  [AUTH_EXPIRY_STATE_KEY]?: number;
+  [SESSION_EXPIRY_STATE_KEY]?: number;
+  [LEGACY_AUTH_EXPIRY_STATE_KEY]?: number;
   [RATE_STATE_KEY]?: RateState;
 };
 type ResourceLimits = ReturnType<typeof parseResourceLimits>;
@@ -50,6 +51,7 @@ interface Env {
   COLLAB_AUTH_KEYS: string;
   COLLAB_METRICS?: AnalyticsEngineDataset;
   COLLAB_MAX_CONNECTIONS_PER_ROOM?: string;
+  COLLAB_CONNECTION_TIMEOUT_SECONDS?: string;
   COLLAB_MAX_MESSAGE_BYTES?: string;
   COLLAB_MAX_UPDATE_BYTES?: string;
   COLLAB_MAX_DOCUMENT_BYTES?: string;
@@ -123,12 +125,18 @@ export class Collaboration extends YServer {
       }
     }
 
-    const delay = getAuthExpiryDelay(context.request);
-    const expiresAt = Number(context.request.headers.get(AUTH_EXPIRY_HEADER));
+    const grantDelay = getAuthExpiryDelay(context.request);
+    if (grantDelay === 0) {
+      connection.close(SESSION_EXPIRED_CLOSE_CODE, "Authentication expired");
+      return;
+    }
+
+    const sessionExpiresAt =
+      Date.now() + this.resourceLimits.connectionTimeoutMilliseconds;
     if (
       !trySetConnectionState(connection, (state) => ({
         ...(state || {}),
-        [AUTH_EXPIRY_STATE_KEY]: expiresAt,
+        [SESSION_EXPIRY_STATE_KEY]: sessionExpiresAt,
       }))
     ) {
       this.rejectForResourceLimit(
@@ -138,15 +146,9 @@ export class Collaboration extends YServer {
       return;
     }
 
-    if (delay === 0) {
-      connection.close(AUTH_EXPIRED_CLOSE_CODE, "Authentication expired");
-      return;
-    }
-
     const currentAlarm = await this.ctx.storage.getAlarm();
-    const expiresAtMilliseconds = expiresAt * 1000;
-    if (currentAlarm === null || expiresAtMilliseconds < currentAlarm) {
-      await this.ctx.storage.setAlarm(expiresAtMilliseconds);
+    if (currentAlarm === null || sessionExpiresAt < currentAlarm) {
+      await this.ctx.storage.setAlarm(sessionExpiresAt);
     }
     await super.onConnect(connection, context);
   }
@@ -155,9 +157,12 @@ export class Collaboration extends YServer {
     connection: Connection<CollaborationConnectionState>,
     message: WSMessage
   ): Promise<void> {
-    const expiresAt = connection.state?.[AUTH_EXPIRY_STATE_KEY];
-    if (!Number.isSafeInteger(expiresAt) || (expiresAt as number) * 1000 <= Date.now()) {
-      connection.close(AUTH_EXPIRED_CLOSE_CODE, "Authentication expired");
+    const expiresAt = getConnectionExpiryMilliseconds(connection.state);
+    if (expiresAt === undefined || expiresAt <= Date.now()) {
+      connection.close(
+        SESSION_EXPIRED_CLOSE_CODE,
+        "Connection timed out. Reconnect."
+      );
       return;
     }
 
@@ -269,39 +274,43 @@ export class Collaboration extends YServer {
 
   async onAlarm(): Promise<void> {
     const now = Date.now();
-    for (const connection of this.getConnections<CollaborationConnectionState>()) {
-      const expiresAt = connection.state?.[AUTH_EXPIRY_STATE_KEY];
-      if (
-        !Number.isSafeInteger(expiresAt) ||
-        (expiresAt as number) * 1000 <= now
-      ) {
-        connection.close(AUTH_EXPIRED_CLOSE_CODE, "Authentication expired");
-      }
-    }
-    await this.scheduleNextAuthAlarm();
-  }
-
-  private async scheduleNextAuthAlarm(): Promise<void> {
     let nextExpiry: number | undefined;
-    const nowSeconds = Date.now() / 1000;
     for (const connection of this.getConnections<CollaborationConnectionState>()) {
-      const expiresAt = connection.state?.[AUTH_EXPIRY_STATE_KEY];
-      if (
-        Number.isSafeInteger(expiresAt) &&
-        (expiresAt as number) > nowSeconds &&
-        (nextExpiry === undefined || (expiresAt as number) < nextExpiry)
-      ) {
-        nextExpiry = expiresAt as number;
+      const expiresAt = getConnectionExpiryMilliseconds(connection.state);
+      if (expiresAt === undefined || expiresAt <= now) {
+        connection.close(
+          SESSION_EXPIRED_CLOSE_CODE,
+          "Connection timed out. Reconnect."
+        );
+      } else if (nextExpiry === undefined || expiresAt < nextExpiry) {
+        nextExpiry = expiresAt;
       }
     }
 
     if (nextExpiry === undefined) {
       await this.ctx.storage.deleteAlarm();
     } else {
-      await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, nextExpiry * 1000));
+      await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, nextExpiry));
     }
   }
 
+}
+
+function getConnectionExpiryMilliseconds(
+  state: CollaborationConnectionState | null | undefined
+): number | undefined {
+  const sessionExpiry = state?.[SESSION_EXPIRY_STATE_KEY];
+  if (Number.isSafeInteger(sessionExpiry)) {
+    return sessionExpiry;
+  }
+
+  // Connections accepted by pre-session-timeout releases retain their
+  // hibernation attachment during deployment. Let their existing credential
+  // expiry trigger one final reconnect rather than silently extending them.
+  const legacyAuthExpiry = state?.[LEGACY_AUTH_EXPIRY_STATE_KEY];
+  return Number.isSafeInteger(legacyAuthExpiry)
+    ? (legacyAuthExpiry as number) * 1_000
+    : undefined;
 }
 
 let cachedAuthKeysSource: string | undefined;

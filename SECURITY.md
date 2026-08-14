@@ -27,9 +27,11 @@ The Worker verifies the HMAC, audience, timestamps, known installation key,
 exact signed Origin, and exact room before PartyServer allocates or joins a
 Durable Object. The browser carries the credential in the
 `Sec-WebSocket-Protocol` header, never in the URL. The Worker strips that
-credential header before forwarding the request, and a Durable Object alarm
-closes the connection when the signed lifetime expires. The provider then
-reconnects with a newly requested WordPress credential.
+credential header before forwarding the request. Credential expiry does not
+close an established connection. A separate Durable Object alarm closes the
+session after four hours by default, at which point the provider reconnects
+with a newly requested WordPress credential. This avoids recurring Yjs
+awareness removal/re-addition while retaining a bounded session.
 
 Room names are not secrets. Their format includes the installation ID and
 WordPress blog ID before the object type and ID, preventing collisions between
@@ -40,7 +42,7 @@ installations and between blogs in one multisite network.
 The Durable Object never writes Yjs document bytes to storage. Its `onLoad()`
 hook deletes the retired `yjs-state-v1` value from rooms created by older
 versions, then starts with an empty in-memory document. Alarms and hibernating
-WebSocket attachments remain durable because they enforce connection expiry;
+WebSocket attachments remain durable because they enforce session expiry;
 they do not contain the shared document.
 
 Gutenberg persists the CRDT snapshot in WordPress's `_crdt_document` post meta.
@@ -77,6 +79,11 @@ flag.
 
 - A stolen credential can be replayed from a non-browser client until it
   expires; Origin is defense in depth, not proof of browser identity.
+- WordPress permission revocation, logout, or account suspension does not
+  terminate an already established WebSocket immediately. It takes effect on
+  reconnect or at the configured session timeout (four hours by default),
+  matching the VIP RTC reference model. Operators can choose a shorter bounded
+  timeout when their revocation requirements outweigh presence stability.
 - A compromised WordPress installation or HMAC key can mint grants for that
   installation. The keyring supports named overlapping keys plus an explicit
   legacy bridge; follow the staged rotation procedure rather than replacing a

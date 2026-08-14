@@ -2,6 +2,7 @@
 
 const DEFAULT_LIMITS = Object.freeze({
   maxConnectionsPerRoom: 20,
+  connectionTimeoutMilliseconds: 4 * 60 * 60 * 1_000,
   maxMessageBytes: 1_572_864,
   maxUpdateBytes: 1_500_000,
   maxDocumentBytes: 1_500_000,
@@ -12,6 +13,7 @@ const DEFAULT_LIMITS = Object.freeze({
 
 const LIMIT_DEFINITIONS = Object.freeze({
   COLLAB_MAX_CONNECTIONS_PER_ROOM: [1, 100],
+  COLLAB_CONNECTION_TIMEOUT_SECONDS: [1, 86_400],
   COLLAB_MAX_MESSAGE_BYTES: [1_024, 4_194_304],
   COLLAB_MAX_UPDATE_BYTES: [1_024, 2_000_000],
   COLLAB_MAX_DOCUMENT_BYTES: [65_536, 1_900_000],
@@ -28,6 +30,7 @@ const MAX_YJS_SYNC_FRAME_OVERHEAD_BYTES = 10;
 /**
  * @typedef {{
  *   COLLAB_MAX_CONNECTIONS_PER_ROOM?: string,
+ *   COLLAB_CONNECTION_TIMEOUT_SECONDS?: string,
  *   COLLAB_MAX_MESSAGE_BYTES?: string,
  *   COLLAB_MAX_UPDATE_BYTES?: string,
  *   COLLAB_MAX_DOCUMENT_BYTES?: string,
@@ -58,6 +61,11 @@ export function parseResourceLimits(env) {
     env,
     "COLLAB_MAX_CONNECTIONS_PER_ROOM",
     DEFAULT_LIMITS.maxConnectionsPerRoom
+  );
+  const connectionTimeoutSeconds = parseBoundedInteger(
+    env,
+    "COLLAB_CONNECTION_TIMEOUT_SECONDS",
+    DEFAULT_LIMITS.connectionTimeoutMilliseconds / 1_000
   );
   const maxMessageBytes = parseBoundedInteger(
     env,
@@ -116,6 +124,7 @@ export function parseResourceLimits(env) {
 
   return Object.freeze({
     maxConnectionsPerRoom,
+    connectionTimeoutMilliseconds: connectionTimeoutSeconds * 1_000,
     maxMessageBytes,
     maxUpdateBytes,
     maxDocumentBytes,

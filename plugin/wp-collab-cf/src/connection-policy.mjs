@@ -1,16 +1,16 @@
 export const RESOURCE_LIMIT_CLOSE_CODE = 4008;
-export const AUTHENTICATION_EXPIRED_CLOSE_CODE = 4001;
+export const SESSION_TIMEOUT_CLOSE_CODE = 4001;
 
 // y-partyserver schedules the first reconnect 100ms after an established
 // socket closes. Exposing that intent keeps Gutenberg from treating an
-// expected credential rotation as an unrecoverable disconnection.
-const AUTHENTICATION_RETRY_DELAY_MS = 100;
+// expected bounded-session reconnect as an unrecoverable disconnection.
+const SESSION_RETRY_DELAY_MS = 100;
 
 /**
  * Adapt y-partyserver status events to Gutenberg's richer connection contract.
  *
  * y-partyserver emits `connection-close` before its bare `disconnected`
- * status. Remember an expected authentication-expiry close long enough to add
+ * status. Remember an expected session-timeout close long enough to add
  * Gutenberg's automatic-retry hint, then clear it once the replacement socket
  * connects. Other close reasons and status fields pass through unchanged.
  *
@@ -25,18 +25,17 @@ const AUTHENTICATION_RETRY_DELAY_MS = 100;
 export function createProviderStatusBridge( provider ) {
 	const boundMethods = new Map();
 	const listeners = new Set();
-	let authenticationRotationPending = false;
+	let sessionReconnectPending = false;
 
 	const onConnectionClose = ( event ) => {
-		authenticationRotationPending =
-			event.code === AUTHENTICATION_EXPIRED_CLOSE_CODE;
+		sessionReconnectPending = event.code === SESSION_TIMEOUT_CLOSE_CODE;
 	};
 	const onStatus = ( status ) => {
 		const bridgedStatus =
-			authenticationRotationPending && status.status === 'disconnected'
+			sessionReconnectPending && status.status === 'disconnected'
 				? {
 						...status,
-						willAutoRetryInMs: AUTHENTICATION_RETRY_DELAY_MS,
+						willAutoRetryInMs: SESSION_RETRY_DELAY_MS,
 				  }
 				: status;
 
@@ -45,7 +44,7 @@ export function createProviderStatusBridge( provider ) {
 		}
 
 		if ( status.status === 'connected' ) {
-			authenticationRotationPending = false;
+			sessionReconnectPending = false;
 		}
 	};
 
@@ -107,7 +106,7 @@ export function createProviderStatusBridge( provider ) {
 
 /**
  * Resource-limit closes are terminal until an operator reviews the room.
- * Authentication-expiry closes intentionally remain reconnectable so the
+ * Session-timeout closes intentionally remain reconnectable so the
  * provider can mint a fresh short-lived credential.
  *
  * @param {{ code?: number }}          event               WebSocket close event.

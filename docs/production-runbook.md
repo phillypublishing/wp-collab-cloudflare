@@ -35,6 +35,7 @@ The application limits are public Wrangler variables:
 | Variable | Default | Meaning |
 | --- | ---: | --- |
 | `COLLAB_MAX_CONNECTIONS_PER_ROOM` | 20 | Accepted WebSockets in one room, including the new candidate |
+| `COLLAB_CONNECTION_TIMEOUT_SECONDS` | 14,400 | Established WebSocket lifetime, independent of the short-lived connection grant |
 | `COLLAB_MAX_MESSAGE_BYTES` | 1,572,864 | Maximum WebSocket frame payload, including protocol overhead |
 | `COLLAB_MAX_UPDATE_BYTES` | 1,500,000 | Maximum Yjs sync step-two/update payload; keep equal to the document limit so WordPress can hydrate an empty relay |
 | `COLLAB_MAX_DOCUMENT_BYTES` | 1,500,000 | Maximum compact merged Yjs update held in memory for a room |
@@ -49,8 +50,11 @@ document. Invalid combinations fail closed at Worker startup.
 Invalid or contradictory values return a generic `503` before routing. A
 limit violation closes only the offending connection with application close
 code `4008`; the WordPress provider treats that code as terminal, stops
-reconnecting, and leaves a persistent editor notice. Authentication expiry
-uses code `4001` and remains reconnectable so a fresh credential can be minted.
+reconnecting, and leaves a persistent editor notice. Session timeout uses code
+`4001` and remains reconnectable so a fresh credential can be minted.
+Deploying this model may cause one final reconnect for sockets carrying the
+legacy credential-expiry attachment; subsequent connections use the
+independent session timeout.
 
 ## First staging deployment
 
@@ -85,8 +89,10 @@ uses code `4001` and remains reconnectable so a fresh credential can be minted.
 5. Confirm `https://<staging-worker>/` returns `status: ok`. Configure a
    staging WordPress site with the matching site ID, secret, Worker WSS URL,
    and `WP_COLLAB_CF_AUTH_KEY_ID` when using a named key.
-6. Run two independent editor sessions through connect, convergence, forced
-   reconnect, and credential refresh. Save a non-baseline edit, confirm
+6. Run two independent editor sessions through connect and convergence. Keep
+   both open past the grant lifetime and confirm no socket, presence, or
+   credential rotation occurs. Then force a reconnect and confirm a fresh
+   credential is obtained. Save a non-baseline edit, confirm
    `_crdt_document` exists in WordPress, disconnect every client, restart the
    Worker, and confirm a new editor hydrates that state from WordPress. Also
    confirm a raw Worker-only probe is absent after restart, plus permission

@@ -443,7 +443,7 @@ test("allows a WebSocket upgrade to reach PartyServer", async () => {
   assert.equal(partyRouterCalls, 1);
 });
 
-test("computes a bounded server-side connection lifetime", () => {
+test("computes the remaining connection-grant validity", () => {
   const request = sanitizeAuthenticatedRequest(
     makeRequest(null),
     nowSeconds + 60

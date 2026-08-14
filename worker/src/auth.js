@@ -386,7 +386,9 @@ async function importVerificationKey(authKey) {
 
 /**
  * Remove the credential-bearing subprotocol before PartyServer receives the
- * request, and attach only the verified expiry for the Durable Object.
+ * request, and attach only the verified grant expiry so the Durable Object can
+ * reject an upgrade that expired in transit. Established-session lifetime is
+ * configured independently by the Durable Object.
  *
  * @param {Request} request
  * @param {number} expiresAtSeconds
@@ -410,8 +412,8 @@ export function sanitizeAuthenticatedRequest(request, expiresAtSeconds) {
 }
 
 /**
- * Compute how long an authenticated connection may remain open. A missing or
- * invalid internal expiry fails closed by closing the connection immediately.
+ * Compute how long the verified connection grant remains valid during the
+ * upgrade. A missing or invalid internal expiry fails closed immediately.
  *
  * @param {Request} request
  * @param {number} [nowMilliseconds]

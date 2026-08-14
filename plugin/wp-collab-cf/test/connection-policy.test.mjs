@@ -66,7 +66,7 @@ test( 'resource-limit closes stop reconnecting and notify the editor', () => {
 	assert.equal( notices, 1 );
 } );
 
-test( 'authentication expiry remains reconnectable', () => {
+test( 'session timeout remains reconnectable', () => {
 	let disconnects = 0;
 	let notices = 0;
 	const handled = handleConnectionClose(
@@ -86,7 +86,7 @@ test( 'authentication expiry remains reconnectable', () => {
 	assert.equal( notices, 0 );
 } );
 
-test( 'authentication rotation reports an automatic retry until reconnected', () => {
+test( 'session timeout reports an automatic retry until reconnected', () => {
 	const provider = createProviderDouble();
 	const bridge = createProviderStatusBridge( provider );
 	const statuses = [];
@@ -151,7 +151,7 @@ test( 'status listeners use the provider snapshot dispatch contract', () => {
 	assert.deepEqual( calls, [ 'first', 'removed', 'first', 'added' ] );
 } );
 
-test( 'one-shot status listeners receive the bridged authentication retry', () => {
+test( 'one-shot status listeners receive the bridged session retry', () => {
 	const provider = createProviderDouble();
 	const bridge = createProviderStatusBridge( provider );
 	const statuses = [];

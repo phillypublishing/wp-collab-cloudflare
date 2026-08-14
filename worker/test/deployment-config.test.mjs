@@ -44,6 +44,20 @@ test("named deployments bind isolated Analytics Engine datasets", async () => {
   );
 });
 
+test("every deployment separates four-hour sessions from short-lived grants", async () => {
+  const config = await wranglerConfig;
+
+  assert.equal(config.vars.COLLAB_CONNECTION_TIMEOUT_SECONDS, "14400");
+  assert.equal(
+    config.env.staging.vars.COLLAB_CONNECTION_TIMEOUT_SECONDS,
+    "14400"
+  );
+  assert.equal(
+    config.env.production.vars.COLLAB_CONNECTION_TIMEOUT_SECONDS,
+    "14400"
+  );
+});
+
 test("staging publishes one stable workers.dev route without preview aliases", async () => {
   const config = await wranglerConfig;
 

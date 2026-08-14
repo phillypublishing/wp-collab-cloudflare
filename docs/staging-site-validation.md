@@ -56,8 +56,10 @@ verified that concurrent editing cannot lose or overwrite its data.
   direction.
 - Create, reply to, edit, resolve, reopen, and delete a Note. Confirm each
   operation appears in the other editor without reloading.
-- Leave both editors connected for at least 75 seconds. The short-lived
-  credential should rotate without a visible **Connection lost** notice.
+- Leave both editors connected for at least 75 seconds. The short-lived grant
+  should expire without rotating the established WebSocket session. Neither
+  editor should see a **Connection lost** notice or a collaborator
+  **has left/has joined** pair.
 - Save a non-baseline edit, close both editor windows, reopen the post, and
   confirm the saved document returns from WordPress.
 - Reload each editor and confirm convergence resumes.

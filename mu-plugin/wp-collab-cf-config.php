@@ -29,7 +29,8 @@ if ( ! defined( 'WP_COLLAB_CF_AUTH_SECRET' ) ) {
 }
 
 // Optional. Set this when COLLAB_AUTH_KEYS uses a named key for this site.
-// Keep the old key in the Worker keyring until every old credential expires.
+// Keep the old key in the Worker keyring until every old grant expires. Live
+// sessions no longer need the signing key after their upgrade is accepted.
 // if ( ! defined( 'WP_COLLAB_CF_AUTH_KEY_ID' ) ) {
 // 	define( 'WP_COLLAB_CF_AUTH_KEY_ID', '2026-08' );
 // }

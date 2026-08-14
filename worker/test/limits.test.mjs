@@ -35,6 +35,7 @@ test("parseResourceLimits supplies bounded production defaults", () => {
   const limits = parseResourceLimits({});
 
   assert.equal(limits.maxConnectionsPerRoom, 20);
+  assert.equal(limits.connectionTimeoutMilliseconds, 4 * 60 * 60 * 1_000);
   assert.equal(limits.maxMessageBytes, 1_572_864);
   assert.equal(limits.maxUpdateBytes, 1_500_000);
   assert.equal(limits.maxDocumentBytes, 1_500_000);
@@ -46,6 +47,7 @@ test("parseResourceLimits supplies bounded production defaults", () => {
 test("parseResourceLimits accepts safe overrides and rejects ambiguous values", () => {
   const limits = parseResourceLimits({
     COLLAB_MAX_CONNECTIONS_PER_ROOM: "8",
+    COLLAB_CONNECTION_TIMEOUT_SECONDS: "3600",
     COLLAB_MAX_MESSAGE_BYTES: "131072",
     COLLAB_MAX_UPDATE_BYTES: "65536",
     COLLAB_MAX_DOCUMENT_BYTES: "65536",
@@ -54,6 +56,7 @@ test("parseResourceLimits accepts safe overrides and rejects ambiguous values", 
     COLLAB_MAX_BYTES_PER_WINDOW: "2000000",
   });
   assert.equal(limits.maxConnectionsPerRoom, 8);
+  assert.equal(limits.connectionTimeoutMilliseconds, 3_600_000);
   assert.equal(limits.maxMessageBytes, 131_072);
   assert.equal(limits.maxUpdateBytes, 65_536);
   assert.equal(limits.rateWindowMilliseconds, 5_000);
@@ -61,6 +64,14 @@ test("parseResourceLimits accepts safe overrides and rejects ambiguous values", 
   assert.throws(
     () => parseResourceLimits({ COLLAB_MAX_MESSAGE_BYTES: "1MB" }),
     /COLLAB_MAX_MESSAGE_BYTES/u
+  );
+  assert.throws(
+    () => parseResourceLimits({ COLLAB_CONNECTION_TIMEOUT_SECONDS: "4h" }),
+    /COLLAB_CONNECTION_TIMEOUT_SECONDS/u
+  );
+  assert.throws(
+    () => parseResourceLimits({ COLLAB_CONNECTION_TIMEOUT_SECONDS: "86401" }),
+    /COLLAB_CONNECTION_TIMEOUT_SECONDS/u
   );
   assert.throws(
     () =>
