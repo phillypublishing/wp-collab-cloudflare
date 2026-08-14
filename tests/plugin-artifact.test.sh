@@ -49,6 +49,9 @@ actual_build_entries="${test_root}/actual-build-entries"
 cat > "${expected_entries}" <<'EOF'
 wp-collab-cf/build/index.asset.php
 wp-collab-cf/build/index.js
+wp-collab-cf/includes/compatibility/memberpress-1-12-17.php
+wp-collab-cf/includes/compatibility/meta-box-policy.php
+wp-collab-cf/includes/compatibility/yoast-seo-premium-28-2.php
 wp-collab-cf/wp-collab-cf.php
 EOF
 cat > "${expected_build_entries}" <<'EOF'

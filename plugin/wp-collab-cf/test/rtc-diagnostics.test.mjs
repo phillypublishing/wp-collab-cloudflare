@@ -410,6 +410,88 @@ test( 'reports site-wide suppression while keeping the browser store authoritati
 	assert.deepEqual( report.blockers[ 0 ].metaBoxIds, [ 'still-rendered' ] );
 } );
 
+test( 'reports stable sanitized compatibility adapter state', () => {
+	const report = createRtcDiagnosticsReport( {
+		wp: createWp( {
+			syncConfig: {
+				supportsPersistence: true,
+				shouldSync: () => true,
+			},
+		} ),
+		browser: { _wpCollaborationEnabled: true },
+		server: {
+			...readyServerReport,
+			compatibilityAdapters: {
+				memberpress: {
+					adapter: 'memberpress_scale_1_12_17',
+					configured: true,
+					eligible: true,
+					applied: true,
+					reason: 'applied',
+					version: '1.12.17',
+					proprietaryPath: '/srv/memberpress/app/controllers/MeprAppCtrl.php',
+				},
+				yoast: {
+					adapter: 'yoast_seo_core_premium_28_2',
+					configured: true,
+					eligible: false,
+					applied: false,
+					reason: 'protected_content',
+					coreVersion: '28.2',
+					premiumVersion: '28.2',
+					ownerFilterObserved: true,
+					ownerFilterSuppressed: false,
+					emojiPickerDisabled: false,
+					protectedContent: {
+						state: 'protected',
+						reason: 'protected_block',
+						block: 'yoast-seo/related-links',
+						content: '<!-- private -->',
+					},
+					addonState: 'supported',
+					unsupportedAddonCount: 0,
+					dependencyState: 'supported',
+					unexpectedDependencyCount: 0,
+					assetsPruned: false,
+					removedScriptHandles: [ 'yoast-seo-post-edit' ],
+					removedStyleHandles: [ 'yoast-seo-metabox-css' ],
+					limitation: 'premium_prominent_words_may_be_stale',
+					pluginPath: '/srv/wordpress-seo-premium/wp-seo-premium.php',
+				},
+			},
+		},
+	} );
+
+	assert.deepEqual( report.compatibilityAdapters.memberpress, {
+		adapter: 'memberpress_scale_1_12_17',
+		configured: true,
+		eligible: true,
+		applied: true,
+		reason: 'applied',
+		version: '1.12.17',
+	} );
+	assert.equal( report.compatibilityAdapters.yoast.reason, 'protected_content' );
+	assert.deepEqual( report.compatibilityAdapters.yoast.protectedContent, {
+		state: 'protected',
+		reason: 'protected_block',
+		block: 'yoast-seo/related-links',
+	} );
+	assert.equal( report.compatibilityAdapters.yoast.unexpectedDependencyCount, 0 );
+	assert.equal(
+		Object.hasOwn(
+			report.compatibilityAdapters.yoast,
+			'unexpectedDependencyHandles'
+		),
+		false
+	);
+	assert.deepEqual(
+		Object.keys( report.compatibilityAdapters ),
+		[ 'memberpress', 'yoast' ]
+	);
+	assert.equal( JSON.stringify( report.compatibilityAdapters ).includes( '/srv/' ), false );
+	assert.equal( JSON.stringify( report.compatibilityAdapters ).includes( '<!-- private -->' ), false );
+} );
+
 test( 'fails closed when Gutenberg meta-box evaluation throws', () => {
 	const report = createRtcDiagnosticsReport( {
 		wp: createWp( {

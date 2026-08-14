@@ -156,6 +156,31 @@ add_filter(
 );
 ```
 
+Two configured IDs use version-locked compatibility adapters instead of the
+generic late registry removal:
+
+- `mepr_unauthorized_message` is removed only for MemberPress Scale 1.12.17
+  when every active occurrence still uses the exact
+  `MeprAppCtrl::unauthorized_meta_box` callback. A version or callback mismatch
+  leaves the complete box present so Gutenberg keeps exclusive editing.
+- `wpseo_meta` is supported only for the exact Yoast SEO Core 28.2 + Premium
+  28.2 pair. The adapter uses Yoast's post-type owner filter before meta-box
+  registration, rejects obvious active Yoast add-ons and protected Yoast block
+  content (including uncertain synced-pattern graphs), and removes the exact
+  characterized editor asset graph. It never falls back to generic late
+  removal. Core FAQ, How-to, breadcrumb, Premium dynamic-block, redirect,
+  frontend SEO/schema, indexable, and save integrations remain available.
+
+These adapters are fail-closed. Unsupported versions, callbacks, add-ons,
+asset dependencies, protected blocks, or uncertain synced content leave RTC
+blocked after Yoast consults its owner filter. A remaining real box also keeps
+Gutenberg exclusive; an absent box with an unobserved owner filter means Yoast
+is inactive on that screen and does not add a synthetic blocker. Yoast Premium
+prominent-word relationships may remain stale after a content-only
+collaborative edit even when the adapter applies; validate that known
+limitation before production rollout. Disabling the site-wide option and
+reloading restores the normal vendor UI.
+
 The policy defaults to off. A user with `manage_options` can enable it from the
 post editor's **Real-time collaboration** document-settings panel. Enabling it
 is site-wide for the current WordPress blog: the selected boxes no longer
@@ -168,6 +193,11 @@ restore normal rendering and Gutenberg's compatibility blockade.
 matched, suppressed, unmatched, and remaining blocker IDs plus enabled,
 effective, and malformed-policy state. Remaining blockers and compatibility
 still come exclusively from Gutenberg's rendered meta-box store.
+`wpCollabCfDiagnostics.report().compatibilityAdapters` separately reports the
+sanitized MemberPress and Yoast adapter eligibility, application, version,
+owner-filter, protected-content, add-on, opaque dependency-count, and
+asset-pruning states.
+It contains no post content, absolute paths, or proprietary plugin basenames.
 
 ### 5. Test
 

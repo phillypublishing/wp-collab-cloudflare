@@ -2,12 +2,16 @@
 /**
  * Plugin Name: WP Collab Cloudflare
  * Description: Routes WordPress 7.0 real-time collaboration through a Cloudflare Workers relay instead of HTTP polling.
- * Version: 0.4.0
+ * Version: 0.5.0
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WP_COLLAB_CF_VERSION', '0.4.0' );
+define( 'WP_COLLAB_CF_VERSION', '0.5.0' );
+
+require_once __DIR__ . '/includes/compatibility/memberpress-1-12-17.php';
+require_once __DIR__ . '/includes/compatibility/yoast-seo-premium-28-2.php';
+require_once __DIR__ . '/includes/compatibility/meta-box-policy.php';
 
 /**
  * Set your deployed Worker URL, site identifier, and signing secret in
@@ -89,7 +93,7 @@ function wp_collab_cf_is_meta_box_suppression_enabled() {
  * @return array Filtered copy of the registry.
  */
 function wp_collab_cf_filter_block_editor_meta_boxes( $wp_meta_boxes ) {
-	global $current_screen, $wp_collab_cf_meta_box_suppression;
+	global $current_screen, $wp_collab_cf_compatibility_adapters, $wp_collab_cf_meta_box_suppression;
 
 	$screen_id       = $current_screen && isset( $current_screen->id ) ? $current_screen->id : '';
 	$include_owner   = current_user_can( 'activate_plugins' );
@@ -100,10 +104,24 @@ function wp_collab_cf_filter_block_editor_meta_boxes( $wp_meta_boxes ) {
 	$effective       = $enabled && null === $policy['warning'] && ! empty( $configured_ids );
 	$matched_ids     = array();
 	$filtered_boxes  = $wp_meta_boxes;
+	$matched_id_set  = array();
+	$policy_valid    = null === $policy['warning'];
+	$compatibility   = wp_collab_cf_apply_compatibility_meta_box_policies(
+		$filtered_boxes,
+		$screen_id,
+		$configured_ids,
+		$enabled,
+		$policy_valid
+	);
+	$filtered_boxes  = $compatibility['boxes'];
+	foreach ( $compatibility['matchedIds'] as $matched_compatibility_id ) {
+		$matched_id_set[ $matched_compatibility_id ] = true;
+	}
+	$wp_collab_cf_compatibility_adapters = $compatibility['diagnostics'];
 
 	if ( $effective && isset( $filtered_boxes[ $screen_id ] ) && is_array( $filtered_boxes[ $screen_id ] ) ) {
-		$configured_id_set = array_fill_keys( $configured_ids, true );
-		$matched_id_set    = array();
+		$generic_ids = array_values( array_diff( $configured_ids, $compatibility['handledIds'] ) );
+		$configured_id_set = array_fill_keys( $generic_ids, true );
 		foreach ( $filtered_boxes[ $screen_id ] as $context => $priorities ) {
 			if ( ! is_array( $priorities ) ) {
 				continue;
@@ -124,15 +142,15 @@ function wp_collab_cf_filter_block_editor_meta_boxes( $wp_meta_boxes ) {
 				}
 			}
 		}
-		$matched_ids = array_values(
-			array_filter(
-				$configured_ids,
-				function ( $id ) use ( $matched_id_set ) {
-					return isset( $matched_id_set[ $id ] );
-				}
-			)
-		);
 	}
+	$matched_ids = array_values(
+		array_filter(
+			$configured_ids,
+			function ( $id ) use ( $matched_id_set ) {
+				return isset( $matched_id_set[ $id ] );
+			}
+		)
+	);
 
 	$wp_collab_cf_meta_box_suppression = array(
 		'configuredIds'  => $configured_ids,
@@ -147,6 +165,27 @@ function wp_collab_cf_filter_block_editor_meta_boxes( $wp_meta_boxes ) {
 	);
 
 	return $filtered_boxes;
+}
+
+/**
+ * Return sanitized compatibility adapter diagnostics.
+ *
+ * @return array MemberPress and Yoast request state.
+ */
+function wp_collab_cf_get_compatibility_adapter_diagnostics() {
+	global $wp_collab_cf_compatibility_adapters;
+
+	$memberpress = isset( $wp_collab_cf_compatibility_adapters['memberpress'] ) && is_array( $wp_collab_cf_compatibility_adapters['memberpress'] )
+		? $wp_collab_cf_compatibility_adapters['memberpress']
+		: wp_collab_cf_memberpress_default_diagnostics();
+	$yoast = isset( $wp_collab_cf_compatibility_adapters['yoast'] ) && is_array( $wp_collab_cf_compatibility_adapters['yoast'] )
+		? $wp_collab_cf_compatibility_adapters['yoast']
+		: wp_collab_cf_yoast_default_diagnostics();
+
+	return array(
+		'memberpress' => $memberpress,
+		'yoast'       => $yoast,
+	);
 }
 
 /**
@@ -399,6 +438,7 @@ function wp_collab_cf_print_diagnostics_data() {
 			? wp_is_post_type_collaboration_disabled( $post_type )
 			: null,
 		'metaBoxSuppression'   => wp_collab_cf_get_meta_box_suppression_diagnostics(),
+		'compatibilityAdapters' => wp_collab_cf_get_compatibility_adapter_diagnostics(),
 		'metaBoxes'            => isset( $wp_collab_cf_diagnostics_meta_boxes ) && is_array( $wp_collab_cf_diagnostics_meta_boxes )
 			? $wp_collab_cf_diagnostics_meta_boxes
 			: array(),

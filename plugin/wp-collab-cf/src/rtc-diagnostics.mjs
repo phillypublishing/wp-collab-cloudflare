@@ -62,6 +62,85 @@ function plainText( value ) {
 		.trim();
 }
 
+function diagnosticString( value ) {
+	return typeof value === 'string' ? value : null;
+}
+
+function diagnosticStringList( value ) {
+	return Array.isArray( value )
+		? value.filter( ( item ) => typeof item === 'string' )
+		: [];
+}
+
+function normalizeCompatibilityAdapters( value ) {
+	const adapters = value && typeof value === 'object' ? value : {};
+	const memberpress =
+		adapters.memberpress && typeof adapters.memberpress === 'object'
+			? adapters.memberpress
+			: {};
+	const yoast =
+		adapters.yoast && typeof adapters.yoast === 'object'
+			? adapters.yoast
+			: {};
+	const protectedContent =
+		yoast.protectedContent &&
+		typeof yoast.protectedContent === 'object'
+			? yoast.protectedContent
+			: {};
+
+	return {
+		memberpress: {
+			adapter:
+				diagnosticString( memberpress.adapter ) ||
+				'memberpress_scale_1_12_17',
+			configured: memberpress.configured === true,
+			eligible: memberpress.eligible === true,
+			applied: memberpress.applied === true,
+			reason: diagnosticString( memberpress.reason ),
+			version: diagnosticString( memberpress.version ),
+		},
+		yoast: {
+			adapter:
+				diagnosticString( yoast.adapter ) ||
+				'yoast_seo_core_premium_28_2',
+			configured: yoast.configured === true,
+			eligible: yoast.eligible === true,
+			applied: yoast.applied === true,
+			reason: diagnosticString( yoast.reason ),
+			coreVersion: diagnosticString( yoast.coreVersion ),
+			premiumVersion: diagnosticString( yoast.premiumVersion ),
+			ownerFilterObserved: yoast.ownerFilterObserved === true,
+			ownerFilterSuppressed: yoast.ownerFilterSuppressed === true,
+			emojiPickerDisabled: yoast.emojiPickerDisabled === true,
+			protectedContent: {
+				state: diagnosticString( protectedContent.state ),
+				reason: diagnosticString( protectedContent.reason ),
+				block: diagnosticString( protectedContent.block ),
+			},
+			addonState: diagnosticString( yoast.addonState ),
+			unsupportedAddonCount:
+				Number.isInteger( yoast.unsupportedAddonCount ) &&
+				yoast.unsupportedAddonCount >= 0
+					? yoast.unsupportedAddonCount
+					: 0,
+			dependencyState: diagnosticString( yoast.dependencyState ),
+			unexpectedDependencyCount:
+				Number.isInteger( yoast.unexpectedDependencyCount ) &&
+				yoast.unexpectedDependencyCount >= 0
+					? yoast.unexpectedDependencyCount
+					: 0,
+			assetsPruned: yoast.assetsPruned === true,
+			removedScriptHandles: diagnosticStringList(
+				yoast.removedScriptHandles
+			),
+			removedStyleHandles: diagnosticStringList(
+				yoast.removedStyleHandles
+			),
+			limitation: diagnosticString( yoast.limitation ),
+		},
+	};
+}
+
 /**
  * Build a read-only, secret-free report from the same gates Gutenberg uses.
  *
@@ -254,6 +333,9 @@ export function createRtcDiagnosticsReport( {
 		blockers,
 		metaBoxes,
 		metaBoxSuppression,
+		compatibilityAdapters: normalizeCompatibilityAdapters(
+			server.compatibilityAdapters
+		),
 	};
 }
 

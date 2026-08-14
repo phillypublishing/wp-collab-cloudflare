@@ -52,6 +52,9 @@ trap 'rm -rf "${stage}"' EXIT
 entries=(
 	wp-collab-cf/build/index.asset.php
 	wp-collab-cf/build/index.js
+	wp-collab-cf/includes/compatibility/memberpress-1-12-17.php
+	wp-collab-cf/includes/compatibility/meta-box-policy.php
+	wp-collab-cf/includes/compatibility/yoast-seo-premium-28-2.php
 	wp-collab-cf/wp-collab-cf.php
 )
 for entry in "${entries[@]}"; do

@@ -42,7 +42,17 @@ jobs:
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
       - run: php -l wp-collab-cf.php
+      - run: |
+          set -euo pipefail
+          compatibility_modules="$(mktemp)"
+          trap 'rm -f "$compatibility_modules"' EXIT
+          find includes/compatibility -type f -name '*.php' -print0 > "$compatibility_modules"
+          test -s "$compatibility_modules"
+          xargs -0 -n1 php -l < "$compatibility_modules"
       - run: php test/rtc-diagnostics.php
+      - run: php test/compatibility-adapters.php
+      - run: php test/compatibility-version-policy.php absent
+      - run: php test/compatibility-version-policy.php mismatch
 
   config:
     runs-on: ubuntu-latest

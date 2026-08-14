@@ -45,11 +45,22 @@ jobs:
 
       - name: Lint plugin PHP
         working-directory: plugin/wp-collab-cf
-        run: php -l wp-collab-cf.php
+        run: |
+          set -euo pipefail
+          php -l wp-collab-cf.php
+          compatibility_modules="$(mktemp)"
+          trap 'rm -f "$compatibility_modules"' EXIT
+          find includes/compatibility -type f -name '*.php' -print0 > "$compatibility_modules"
+          test -s "$compatibility_modules"
+          xargs -0 -n1 php -l < "$compatibility_modules"
 
       - name: Test plugin PHP diagnostics
         working-directory: plugin/wp-collab-cf
-        run: php test/rtc-diagnostics.php
+        run: |
+          php test/rtc-diagnostics.php
+          php test/compatibility-adapters.php
+          php test/compatibility-version-policy.php absent
+          php test/compatibility-version-policy.php mismatch
 
       - name: Build and verify reproducible artifact
         env:
