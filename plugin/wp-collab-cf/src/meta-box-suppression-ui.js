@@ -1,3 +1,4 @@
+import { Button } from '@wordpress/components';
 import { PluginPostStatusInfo } from '@wordpress/editor';
 import { createElement } from '@wordpress/element';
 import { registerPlugin } from '@wordpress/plugins';
@@ -13,19 +14,23 @@ function MetaBoxSuppressionPanel() {
 		{
 			className: 'wp-collab-cf-meta-box-suppression',
 		},
-		createElement( 'strong', null, 'Real-time collaboration' ),
-		createElement( 'p', null, state.status ),
+		createElement( 'span', null, 'Legacy meta boxes' ),
 		state.settingsUrl
 			? createElement(
-					'p',
-					null,
-					createElement(
-						'a',
-						{ href: state.settingsUrl },
-						'Manage site-wide settings'
-					)
+					Button,
+					{
+						'aria-label': `Manage legacy meta-box suppression settings. ${ state.description }`,
+						href: state.settingsUrl,
+						size: 'compact',
+						variant: 'link',
+					},
+					state.status
 			  )
-			: null
+			: createElement(
+					'span',
+					{ 'aria-label': state.description },
+					state.status
+			  )
 	);
 }
 
