@@ -326,12 +326,11 @@ test("workerd keeps a session alive past grant expiry and closes at the session 
   );
 
   const peer = await connect(runtime);
+  const updatePromise = waitForSyncUpdate(peer.socket);
   const source = new Y.Doc();
   source.getText("content").insert(0, "relayed after grant expiry");
   established.socket.send(syncMessage(2, Y.encodeStateAsUpdate(source)));
-  const updatePromise = waitForSyncUpdate(peer.socket);
   const peerState = new Y.Doc();
-  peer.socket.send(syncMessage(0, Y.encodeStateVector(peerState)));
   Y.applyUpdate(peerState, await updatePromise);
   assert.equal(peerState.getText("content").toString(), "relayed after grant expiry");
 
