@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { Miniflare, NoOpLog } from "miniflare";
@@ -21,6 +22,7 @@ const secret =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const origin = "https://wordpress.example.test";
 const room = `v1.${site}.1.cG9zdFR5cGUvcG9zdA.MTIz`;
+const attachmentFixtureHeader = "X-WP-Collab-Attachment-Fixture";
 
 function createRuntimeOptions(persistPath, limitOverrides = {}) {
   return {
@@ -69,12 +71,12 @@ function createAttachmentFixtureRuntime(
         Collaboration as ProductionCollaboration,
       } from "./index.js";
 
-      const fixtureHeader = "X-WP-Collab-Attachment-Fixture";
-
       export class Collaboration extends ProductionCollaboration {
         async onConnect(connection, context) {
           await super.onConnect(connection, context);
-          const shape = context.request.headers.get(fixtureHeader);
+          const shape = context.request.headers.get(
+            ${JSON.stringify(attachmentFixtureHeader)}
+          );
           if (!shape) {
             return;
           }
@@ -178,41 +180,26 @@ async function mintToken(lifetimeSeconds = 30) {
   return `${payload}.${base64UrlEncode(new Uint8Array(signature))}`;
 }
 
-async function connect(runtime, lifetimeSeconds = 30) {
+async function connect(
+  runtime,
+  { attachmentShape, lifetimeSeconds = 30 } = {}
+) {
   const baseUrl = await runtime.ready;
   const url = new URL(`/parties/collaboration/${room}`, baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   const token = await mintToken(lifetimeSeconds);
+  const options = { origin };
+  if (attachmentShape !== undefined) {
+    options.headers = { [attachmentFixtureHeader]: attachmentShape };
+  }
   const socket = new WebSocket(
     url,
     ["wp-collab-v1", `wp-collab-token.${token}`],
-    { origin }
+    options
   );
   const close = once(socket, "close");
   await once(socket, "open");
   return { socket, close };
-}
-
-async function connectWithAttachmentShape(runtime, shape) {
-  const baseUrl = await runtime.ready;
-  const url = new URL(`/parties/collaboration/${room}`, baseUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  const token = await mintToken();
-  const socket = new WebSocket(
-    url,
-    ["wp-collab-v1", `wp-collab-token.${token}`],
-    {
-      origin,
-      headers: { "X-WP-Collab-Attachment-Fixture": shape },
-    }
-  );
-  const close = once(socket, "close");
-  await once(socket, "open");
-  return { socket, close };
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function createAuthenticatedWebSocket(issuedTokens) {
@@ -392,7 +379,7 @@ test("workerd keeps a session alive past grant expiry and closes at the session 
     await rm(persistPath, { recursive: true, force: true });
   });
 
-  const established = await connect(runtime, 2);
+  const established = await connect(runtime, { lifetimeSeconds: 2 });
   const establishedOpenedAt = Date.now();
   await delay(2_500);
   assert.equal(
@@ -547,9 +534,9 @@ test("workerd honors legacy hibernation expiry and fails closed for invalid atta
     await rm(persistPath, { recursive: true, force: true });
   });
 
-  const legacy = await connectWithAttachmentShape(runtime, "legacy");
-  const malformed = await connectWithAttachmentShape(runtime, "malformed");
-  const missing = await connectWithAttachmentShape(runtime, "missing");
+  const legacy = await connect(runtime, { attachmentShape: "legacy" });
+  const malformed = await connect(runtime, { attachmentShape: "malformed" });
+  const missing = await connect(runtime, { attachmentShape: "missing" });
 
   malformed.socket.send(new Uint8Array([0]));
   missing.socket.send(new Uint8Array([0]));
