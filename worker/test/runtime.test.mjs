@@ -23,6 +23,9 @@ const secret =
 const origin = "https://wordpress.example.test";
 const room = `v1.${site}.1.cG9zdFR5cGUvcG9zdA.MTIz`;
 const attachmentFixtureHeader = "X-WP-Collab-Attachment-Fixture";
+const expectedCloseTimeoutMilliseconds = 15_000;
+const clientCloseTimeoutMilliseconds = 30_000;
+const runtimeTestOptions = { timeout: 60_000 };
 
 function createRuntimeOptions(persistPath, limitOverrides = {}) {
   return {
@@ -55,7 +58,7 @@ function createRuntime(persistPath, limitOverrides = {}) {
 
 function createAttachmentFixtureRuntime(
   persistPath,
-  legacyExpiresAtSeconds
+  legacyExpirySecondsByShape
 ) {
   return new Miniflare({
     ...createRuntimeOptions(persistPath),
@@ -83,17 +86,25 @@ function createAttachmentFixtureRuntime(
 
           const state = { ...(connection.state || {}) };
           delete state.__wpCollabSessionExpires;
-          if (shape === "legacy") {
-            state.__wpCollabAuthExpires = ${legacyExpiresAtSeconds};
-            await this.ctx.storage.setAlarm(
-              ${legacyExpiresAtSeconds} * 1000
-            );
+          const legacyExpiresAtSeconds = ${JSON.stringify(
+            legacyExpirySecondsByShape
+          )}[shape];
+          if (legacyExpiresAtSeconds !== undefined) {
+            state.__wpCollabAuthExpires = legacyExpiresAtSeconds;
           } else if (shape === "malformed") {
             state.__wpCollabAuthExpires = "not-seconds";
           } else {
             delete state.__wpCollabAuthExpires;
           }
           connection.setState(state);
+
+          if (legacyExpiresAtSeconds !== undefined) {
+            const legacyExpiresAt = legacyExpiresAtSeconds * 1000;
+            const currentAlarm = await this.ctx.storage.getAlarm();
+            if (currentAlarm === null || legacyExpiresAt < currentAlarm) {
+              await this.ctx.storage.setAlarm(legacyExpiresAt);
+            }
+          }
         }
       }
 
@@ -182,7 +193,11 @@ async function mintToken(lifetimeSeconds = 30) {
 
 async function connect(
   runtime,
-  { attachmentShape, lifetimeSeconds = 30 } = {}
+  {
+    attachmentShape,
+    expectedCloseDescription,
+    lifetimeSeconds = 30,
+  } = {}
 ) {
   const baseUrl = await runtime.ready;
   const url = new URL(`/parties/collaboration/${room}`, baseUrl);
@@ -197,9 +212,34 @@ async function connect(
     ["wp-collab-v1", `wp-collab-token.${token}`],
     options
   );
-  const close = once(socket, "close");
+  const close = expectedCloseDescription
+    ? waitForExpectedClose(
+        socket,
+        expectedCloseDescription
+      )
+    : undefined;
   await once(socket, "open");
   return { socket, close };
+}
+
+async function waitForExpectedClose(
+  socket,
+  description,
+  timeoutMilliseconds = expectedCloseTimeoutMilliseconds
+) {
+  try {
+    return await once(socket, "close", {
+      signal: AbortSignal.timeout(timeoutMilliseconds),
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(
+        `timed out after ${timeoutMilliseconds}ms waiting for ${description} to close`,
+        { cause: error }
+      );
+    }
+    throw error;
+  }
 }
 
 function createAuthenticatedWebSocket(issuedTokens) {
@@ -344,14 +384,35 @@ function waitForSyncUpdate(socket) {
   });
 }
 
-async function closeSocket(socket, close) {
+async function closeSocket(socket, description) {
+  if (socket.readyState === WebSocket.CLOSED) {
+    return;
+  }
+  const close = waitForExpectedClose(
+    socket,
+    description,
+    clientCloseTimeoutMilliseconds
+  );
   if (socket.readyState === WebSocket.OPEN) {
     socket.close(1000, "test complete");
   }
   await close;
 }
 
-test("workerd enforces room capacity", async (t) => {
+async function terminateSocket(socket, description) {
+  if (socket.readyState === WebSocket.CLOSED) {
+    return;
+  }
+  const close = waitForExpectedClose(
+    socket,
+    description,
+    clientCloseTimeoutMilliseconds
+  );
+  socket.terminate();
+  await close;
+}
+
+test("workerd enforces room capacity", runtimeTestOptions, async (t) => {
   const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-runtime-"));
   const runtime = createRuntime(persistPath, {
     COLLAB_MAX_CONNECTIONS_PER_ROOM: "1",
@@ -362,24 +423,29 @@ test("workerd enforces room capacity", async (t) => {
   });
 
   const first = await connect(runtime);
-  const second = await connect(runtime);
+  const second = await connect(runtime, {
+    expectedCloseDescription: "capacity-rejected socket",
+  });
   const [resourceCode] = await second.close;
   assert.equal(resourceCode, 4008);
-  await closeSocket(first.socket, first.close);
+  await closeSocket(first.socket, "first capacity socket");
 
 });
 
-test("workerd keeps a session alive past grant expiry and closes at the session timeout", async (t) => {
+test("workerd keeps a session alive past grant expiry and closes at the session timeout", runtimeTestOptions, async (t) => {
   const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-session-"));
   const runtime = createRuntime(persistPath, {
-    COLLAB_CONNECTION_TIMEOUT_SECONDS: "4",
+    COLLAB_CONNECTION_TIMEOUT_SECONDS: "8",
   });
   t.after(async () => {
     await runtime.dispose();
     await rm(persistPath, { recursive: true, force: true });
   });
 
-  const established = await connect(runtime, { lifetimeSeconds: 2 });
+  const established = await connect(runtime, {
+    expectedCloseDescription: "earlier session",
+    lifetimeSeconds: 2,
+  });
   const establishedOpenedAt = Date.now();
   await delay(2_500);
   assert.equal(
@@ -388,7 +454,9 @@ test("workerd keeps a session alive past grant expiry and closes at the session 
     "an expired connection grant must not remove the established session"
   );
 
-  const peer = await connect(runtime);
+  const peer = await connect(runtime, {
+    expectedCloseDescription: "later session",
+  });
   const peerOpenedAt = Date.now();
   const updatePromise = waitForSyncUpdate(peer.socket);
   const source = new Y.Doc();
@@ -407,15 +475,24 @@ test("workerd keeps a session alive past grant expiry and closes at the session 
     WebSocket.OPEN,
     "the later session must survive the earlier session's alarm"
   );
+  const observer = await connect(runtime);
+  const observerState = new Y.Doc();
+  const observerInitialUpdate = waitForSyncUpdate(observer.socket);
+  observer.socket.send(
+    syncMessage(0, Y.encodeStateVector(observerState))
+  );
+  Y.applyUpdate(observerState, await observerInitialUpdate);
+  assert.equal(
+    observerState.getText("content").toString(),
+    "relayed after grant expiry"
+  );
+
+  const observerUpdate = waitForSyncUpdate(observer.socket);
   peerState.getText("content").insert(
     peerState.getText("content").length,
     " and after the earlier session timeout"
   );
   peer.socket.send(syncMessage(2, Y.encodeStateAsUpdate(peerState)));
-  const observer = await connect(runtime);
-  const observerUpdate = waitForSyncUpdate(observer.socket);
-  const observerState = new Y.Doc();
-  observer.socket.send(syncMessage(0, Y.encodeStateVector(observerState)));
   Y.applyUpdate(observerState, await observerUpdate);
   assert.equal(
     observerState.getText("content").toString(),
@@ -426,24 +503,24 @@ test("workerd keeps a session alive past grant expiry and closes at the session 
   const peerClosedAt = Date.now();
   assert.equal(peerSessionCode, 4001);
   assert.ok(
-    peerClosedAt >= peerOpenedAt + 3_500,
-    "the later session must close at its own four-second deadline"
+    peerClosedAt >= peerOpenedAt + 7_500,
+    "the later session must close at its own eight-second deadline"
   );
   assert.ok(
     peerClosedAt >= establishedClosedAt + 1_500,
     "session alarms must preserve the ordering of independently established deadlines"
   );
   assert.ok(
-    establishedClosedAt >= establishedOpenedAt + 3_500,
+    establishedClosedAt >= establishedOpenedAt + 7_500,
     "the earlier session must close at its session deadline, not its grant deadline"
   );
   source.destroy();
   peerState.destroy();
   observerState.destroy();
-  await closeSocket(observer.socket, observer.close);
+  await closeSocket(observer.socket, "session observer socket");
 });
 
-test("y-partyserver reconnects after a real session timeout with a fresh grant", async (t) => {
+test("y-partyserver reconnects after a real session timeout with a fresh grant", runtimeTestOptions, async (t) => {
   const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-provider-"));
   const runtime = createRuntime(persistPath, {
     COLLAB_CONNECTION_TIMEOUT_SECONDS: "3",
@@ -460,7 +537,7 @@ test("y-partyserver reconnects after a real session timeout with a fresh grant",
     maxBackoffTime: 100,
     params: async () => {
       credentialIssueCount += 1;
-      return { token: await mintToken(1) };
+      return { token: await mintToken() };
     },
     party: "collaboration",
     protocol: baseUrl.protocol === "https:" ? "wss" : "ws",
@@ -517,26 +594,58 @@ test("y-partyserver reconnects after a real session timeout with a fresh grant",
     "survived timeout and converged"
   );
   peerDocument.destroy();
-  await closeSocket(peer.socket, peer.close);
+  await terminateSocket(peer.socket, "provider peer socket");
 });
 
-test("workerd honors legacy hibernation expiry and fails closed for invalid attachment state", async (t) => {
+test("workerd honors legacy hibernation expiry and fails closed for invalid attachment state", runtimeTestOptions, async (t) => {
   const persistPath = await mkdtemp(
     path.join(tmpdir(), "wp-collab-legacy-attachment-")
   );
-  const legacyExpiresAtSeconds = Math.floor(Date.now() / 1_000) + 4;
+  const legacyEarlyExpiresAtSeconds = Math.floor(Date.now() / 1_000) + 6;
+  const legacyLateExpiresAtSeconds = legacyEarlyExpiresAtSeconds + 4;
   const runtime = createAttachmentFixtureRuntime(
     persistPath,
-    legacyExpiresAtSeconds
+    {
+      "legacy-early": legacyEarlyExpiresAtSeconds,
+      "legacy-late": legacyLateExpiresAtSeconds,
+    }
   );
   t.after(async () => {
     await runtime.dispose();
     await rm(persistPath, { recursive: true, force: true });
   });
 
-  const legacy = await connect(runtime, { attachmentShape: "legacy" });
-  const malformed = await connect(runtime, { attachmentShape: "malformed" });
-  const missing = await connect(runtime, { attachmentShape: "missing" });
+  const legacyEarly = await connect(runtime, {
+    attachmentShape: "legacy-early",
+    expectedCloseDescription: "earlier legacy session",
+  });
+  const earlyProbe = new Y.Doc();
+  const earlyProbeUpdate = waitForSyncUpdate(legacyEarly.socket);
+  legacyEarly.socket.send(
+    syncMessage(0, Y.encodeStateVector(earlyProbe))
+  );
+  await earlyProbeUpdate;
+  earlyProbe.destroy();
+  await delay(250);
+  const legacyLate = await connect(runtime, {
+    attachmentShape: "legacy-late",
+    expectedCloseDescription: "later legacy session",
+  });
+  const lateProbe = new Y.Doc();
+  const lateProbeUpdate = waitForSyncUpdate(legacyLate.socket);
+  legacyLate.socket.send(
+    syncMessage(0, Y.encodeStateVector(lateProbe))
+  );
+  await lateProbeUpdate;
+  lateProbe.destroy();
+  const malformed = await connect(runtime, {
+    attachmentShape: "malformed",
+    expectedCloseDescription: "malformed attachment session",
+  });
+  const missing = await connect(runtime, {
+    attachmentShape: "missing",
+    expectedCloseDescription: "missing attachment session",
+  });
 
   malformed.socket.send(new Uint8Array([0]));
   missing.socket.send(new Uint8Array([0]));
@@ -548,25 +657,37 @@ test("workerd honors legacy hibernation expiry and fails closed for invalid atta
   assert.equal(missingCode, 4001);
 
   const millisecondsBeforeDeadline =
-    legacyExpiresAtSeconds * 1_000 - Date.now();
+    legacyEarlyExpiresAtSeconds * 1_000 - Date.now();
   if (millisecondsBeforeDeadline > 500) {
     await delay(millisecondsBeforeDeadline - 500);
   }
   assert.equal(
-    legacy.socket.readyState,
+    legacyEarly.socket.readyState,
     WebSocket.OPEN,
-    "a legacy seconds attachment must remain open before its converted deadline"
+    "the earlier legacy seconds attachment must remain open before its converted deadline"
   );
 
-  const [legacyCode] = await legacy.close;
-  assert.equal(legacyCode, 4001);
+  const [legacyEarlyCode] = await legacyEarly.close;
+  assert.equal(legacyEarlyCode, 4001);
   assert.ok(
-    Date.now() >= legacyExpiresAtSeconds * 1_000,
-    "a legacy seconds attachment must close at or after its converted deadline"
+    Date.now() >= legacyEarlyExpiresAtSeconds * 1_000,
+    "the earlier legacy seconds attachment must close at or after its converted deadline"
+  );
+  assert.equal(
+    legacyLate.socket.readyState,
+    WebSocket.OPEN,
+    "the later legacy session must survive the earlier legacy alarm"
+  );
+
+  const [legacyLateCode] = await legacyLate.close;
+  assert.equal(legacyLateCode, 4001);
+  assert.ok(
+    Date.now() >= legacyLateExpiresAtSeconds * 1_000,
+    "the rescheduled alarm must close the later legacy session at its own converted deadline"
   );
 });
 
-test("workerd does not retain Yjs state after a runtime restart", async (t) => {
+test("workerd does not retain Yjs state after a runtime restart", runtimeTestOptions, async (t) => {
   const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-persist-"));
   let runtime = createRuntime(persistPath);
   t.after(async () => {
@@ -591,7 +712,7 @@ test("workerd does not retain Yjs state after a runtime restart", async (t) => {
   source.destroy();
   seedQuery.destroy();
   seededRelay.destroy();
-  await closeSocket(writer.socket, writer.close);
+  await closeSocket(writer.socket, "restart writer socket");
   await runtime.dispose();
 
   runtime = createRuntime(persistPath);
@@ -607,10 +728,10 @@ test("workerd does not retain Yjs state after a runtime restart", async (t) => {
   assert.equal(restored.getText("content").toString(), "");
   emptyDocument.destroy();
   restored.destroy();
-  await closeSocket(reader.socket, reader.close);
+  await closeSocket(reader.socket, "restart reader socket");
 });
 
-test("workerd accepts a WordPress-sized snapshot into an empty relay", async (t) => {
+test("workerd accepts a WordPress-sized snapshot into an empty relay", runtimeTestOptions, async (t) => {
   const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-hydrate-"));
   const runtime = createRuntime(persistPath);
   t.after(async () => {
@@ -635,11 +756,11 @@ test("workerd accepts a WordPress-sized snapshot into an empty relay", async (t)
 
   source.destroy();
   readerState.destroy();
-  await closeSocket(reader.socket, reader.close);
-  await closeSocket(writer.socket, writer.close);
+  await closeSocket(reader.socket, "snapshot reader socket");
+  await closeSocket(writer.socket, "snapshot writer socket");
 });
 
-test("workerd scrubs legacy Yjs storage when a room activates", async (t) => {
+test("workerd scrubs legacy Yjs storage when a room activates", runtimeTestOptions, async (t) => {
   const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-legacy-"));
   let runtime = createLegacyStorageFixtureRuntime(persistPath);
   t.after(async () => {
@@ -656,7 +777,7 @@ test("workerd scrubs legacy Yjs storage when a room activates", async (t) => {
 
   runtime = createRuntime(persistPath);
   const reader = await connect(runtime);
-  await closeSocket(reader.socket, reader.close);
+  await closeSocket(reader.socket, "legacy storage reader socket");
   await runtime.dispose();
 
   runtime = createLegacyStorageFixtureRuntime(persistPath);
