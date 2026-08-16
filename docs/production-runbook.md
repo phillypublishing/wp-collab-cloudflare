@@ -245,6 +245,14 @@ hibernation. Once no client can provide state and the Worker restarts or the
 instance is evicted, the relay starts empty. Gutenberg then loads the durable
 CRDT snapshot and current entity values from WordPress.
 
+Closing the final WebSocket is not currently a synchronous reset boundary.
+PartyServer/YServer exposes no supported hook that disposes only the in-memory
+room document, while `DurableObjectState.abort()` emits an operator-visible
+JavaScript error and is unavailable under local Wrangler development. The
+opt-in `WP_COLLAB_RUN_FINAL_PEER_CHARACTERIZATION=1` workerd test preserves the
+desired last-peer contract as executable failing evidence; ordinary runtime QA
+skips it until the upstream lifecycle has a production-safe reset seam.
+
 This applies equally to collection rooms. Their Yjs document carries only a
 lightweight invalidation signal; authoritative records remain in WordPress and
 are refetched through REST. Restart verification seeds a uniquely named
