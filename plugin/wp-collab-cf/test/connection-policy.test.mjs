@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 
 import {
@@ -11,7 +12,11 @@ function createProviderDouble() {
 	let destroys = 0;
 
 	return {
+		maxBackoffTime: 2_500,
 		marker: 'provider-state',
+		shouldConnect: true,
+		wsUnsuccessfulReconnects: 0,
+		wsconnected: true,
 		destroy: () => {
 			destroys += 1;
 		},
@@ -21,6 +26,7 @@ function createProviderDouble() {
 				callback( ...values );
 			}
 		},
+		listenerCount: ( event ) => ( listeners.get( event ) || [] ).length,
 		off: ( event, callback ) => {
 			const callbacks = listeners.get( event ) || [];
 			listeners.set(
@@ -66,6 +72,28 @@ test( 'resource-limit closes stop reconnecting and notify the editor', () => {
 	assert.equal( notices, 1 );
 } );
 
+for ( const code of [ 1002, 1008 ] ) {
+	test( `terminal WebSocket close ${ code } stops reconnecting without a resource notice`, () => {
+		let disconnects = 0;
+		let notices = 0;
+		const handled = handleConnectionClose(
+			{ code },
+			{
+				disconnect: () => {
+					disconnects += 1;
+				},
+			},
+			() => {
+				notices += 1;
+			}
+		);
+
+		assert.equal( handled, true );
+		assert.equal( disconnects, 1 );
+		assert.equal( notices, 0 );
+	} );
+}
+
 test( 'session timeout remains reconnectable', () => {
 	let disconnects = 0;
 	let notices = 0;
@@ -96,40 +124,97 @@ test( 'session timeout reports an automatic retry until reconnected', () => {
 	provider.emit( 'status', [ { status: 'disconnected' } ] );
 	provider.emit( 'status', [ { status: 'connecting' } ] );
 	provider.emit( 'status', [ { status: 'connected' } ] );
-	provider.emit( 'status', [ { status: 'disconnected' } ] );
 
 	assert.deepEqual( statuses, [
-		{ status: 'disconnected', willAutoRetryInMs: 100 },
+		{
+			status: 'disconnected',
+			willAutoRetryInMs: 100,
+			backgroundRetriesFailed: false,
+		},
 		{ status: 'connecting' },
 		{ status: 'connected' },
-		{ status: 'disconnected' },
 	] );
 
 	bridge.destroy();
 	assert.equal( provider.destroyCount(), 1 );
 } );
 
-test( 'non-expiry closes retain their original disconnected status', () => {
+test( 'generic transient closes report exact provider retry timing and threshold', () => {
 	const provider = createProviderDouble();
 	const bridge = createProviderStatusBridge( provider );
 	const statuses = [];
 	bridge.on( 'status', ( status ) => statuses.push( status ) );
 
-	provider.emit( 'connection-close', [ { code: 4008 } ] );
-	provider.emit( 'status', [
-		{
-			status: 'disconnected',
-			error: { code: 'document-size-limit-exceeded' },
-		},
-	] );
+	provider.emit( 'connection-close', [ { code: 1006 } ] );
+	provider.emit( 'status', [ { status: 'disconnected' } ] );
+	provider.wsconnected = false;
+	for ( const unsuccessfulReconnects of [ 0, 1, 2 ] ) {
+		provider.wsUnsuccessfulReconnects = unsuccessfulReconnects;
+		provider.emit( 'connection-close', [ { code: 1006 } ] );
+	}
 
 	assert.deepEqual( statuses, [
 		{
 			status: 'disconnected',
-			error: { code: 'document-size-limit-exceeded' },
+			willAutoRetryInMs: 100,
+			backgroundRetriesFailed: false,
+		},
+		{
+			status: 'disconnected',
+			willAutoRetryInMs: 200,
+			backgroundRetriesFailed: false,
+		},
+		{
+			status: 'disconnected',
+			willAutoRetryInMs: 400,
+			backgroundRetriesFailed: false,
+		},
+		{
+			status: 'disconnected',
+			willAutoRetryInMs: 800,
+			backgroundRetriesFailed: true,
 		},
 	] );
 } );
+
+test( 'a stable reconnect resets the generic retry failure count', async () => {
+	const provider = createProviderDouble();
+	const bridge = createProviderStatusBridge( provider );
+	const statuses = [];
+	bridge.on( 'status', ( status ) => statuses.push( status ) );
+
+	provider.wsconnected = false;
+	for ( const unsuccessfulReconnects of [ 0, 1, 2 ] ) {
+		provider.wsUnsuccessfulReconnects = unsuccessfulReconnects;
+		provider.emit( 'connection-close', [ { code: 1006 } ] );
+	}
+	provider.wsconnected = true;
+	provider.wsUnsuccessfulReconnects = 0;
+	provider.emit( 'status', [ { status: 'connected' } ] );
+	await delay( 2_050 );
+	provider.emit( 'connection-close', [ { code: 1006 } ] );
+
+	assert.deepEqual( statuses.at( -1 ), {
+		status: 'disconnected',
+		willAutoRetryInMs: 100,
+		backgroundRetriesFailed: false,
+	} );
+	bridge.destroy();
+} );
+
+for ( const code of [ 4008, 1002, 1008 ] ) {
+	test( `terminal close ${ code } emits no retry metadata`, () => {
+		const provider = createProviderDouble();
+		const bridge = createProviderStatusBridge( provider );
+		const statuses = [];
+		bridge.on( 'status', ( status ) => statuses.push( status ) );
+
+		provider.emit( 'connection-close', [ { code } ] );
+		provider.emit( 'status', [ { status: 'disconnected' } ] );
+
+		assert.deepEqual( statuses, [ { status: 'disconnected' } ] );
+	} );
+}
 
 test( 'status listeners use the provider snapshot dispatch contract', () => {
 	const provider = createProviderDouble();
@@ -149,6 +234,7 @@ test( 'status listeners use the provider snapshot dispatch contract', () => {
 
 	provider.emit( 'status', [ { status: 'connected' } ] );
 	assert.deepEqual( calls, [ 'first', 'removed', 'first', 'added' ] );
+	bridge.destroy();
 } );
 
 test( 'one-shot status listeners receive the bridged session retry', () => {
@@ -162,24 +248,33 @@ test( 'one-shot status listeners receive the bridged session retry', () => {
 	provider.emit( 'status', [ { status: 'connecting' } ] );
 
 	assert.deepEqual( statuses, [
-		{ status: 'disconnected', willAutoRetryInMs: 100 },
+		{
+			status: 'disconnected',
+			willAutoRetryInMs: 100,
+			backgroundRetriesFailed: false,
+		},
 	] );
 } );
 
-test( 'the facade preserves provider methods and detaches on destroy', () => {
+test( 'the facade preserves one listener pair and detaches once on destroy', () => {
 	const provider = createProviderDouble();
 	const bridge = createProviderStatusBridge( provider );
 	const statuses = [];
 	bridge.on( 'status', ( status ) => statuses.push( status ) );
+	assert.equal( provider.listenerCount( 'connection-close' ), 1 );
+	assert.equal( provider.listenerCount( 'status' ), 1 );
 
 	assert.equal( bridge.readMarker(), 'provider-state' );
 	bridge.marker = 'updated-through-facade';
 	assert.equal( provider.marker, 'updated-through-facade' );
 
 	bridge.destroy();
+	bridge.destroy();
 	provider.emit( 'connection-close', [ { code: 4001 } ] );
 	provider.emit( 'status', [ { status: 'disconnected' } ] );
 
 	assert.deepEqual( statuses, [] );
 	assert.equal( provider.destroyCount(), 1 );
+	assert.equal( provider.listenerCount( 'connection-close' ), 0 );
+	assert.equal( provider.listenerCount( 'status' ), 0 );
 } );

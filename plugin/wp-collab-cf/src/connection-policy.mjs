@@ -1,18 +1,27 @@
 export const RESOURCE_LIMIT_CLOSE_CODE = 4008;
 export const SESSION_TIMEOUT_CLOSE_CODE = 4001;
 
-// y-partyserver schedules the first reconnect 100ms after an established
-// socket closes. Exposing that intent keeps Gutenberg from treating an
-// expected bounded-session reconnect as an unrecoverable disconnection.
-const SESSION_RETRY_DELAY_MS = 100;
+const PROTOCOL_ERROR_CLOSE_CODE = 1002;
+const POLICY_VIOLATION_CLOSE_CODE = 1008;
+const BACKGROUND_RETRIES_FAILED_THRESHOLD = 3;
+const CONNECTION_STABLE_RESET_DELAY_MS = 2_000;
+
+function isTerminalClose( code ) {
+	return [
+		PROTOCOL_ERROR_CLOSE_CODE,
+		POLICY_VIOLATION_CLOSE_CODE,
+		RESOURCE_LIMIT_CLOSE_CODE,
+	].includes( code );
+}
 
 /**
  * Adapt y-partyserver status events to Gutenberg's richer connection contract.
  *
  * y-partyserver emits `connection-close` before its bare `disconnected`
- * status. Remember an expected session-timeout close long enough to add
- * Gutenberg's automatic-retry hint, then clear it once the replacement socket
- * connects. Other close reasons and status fields pass through unchanged.
+ * status, and emits no disconnected status when a connection attempt fails
+ * before opening. Emit one enriched disconnected status from the close event
+ * so Gutenberg can keep ordinary transient retries in the background. The
+ * retry delay mirrors y-partyserver's exponential backoff exactly.
  *
  * @param {{
  *   destroy: () => void,
@@ -25,26 +34,65 @@ const SESSION_RETRY_DELAY_MS = 100;
 export function createProviderStatusBridge( provider ) {
 	const boundMethods = new Map();
 	const listeners = new Set();
-	let sessionReconnectPending = false;
+	let consecutiveFailedRetries = 0;
+	let connectionStableTimer = null;
+	let destroyed = false;
+	let suppressNextDisconnected = false;
+	const clearConnectionStableTimer = () => {
+		if ( connectionStableTimer !== null ) {
+			clearTimeout( connectionStableTimer );
+			connectionStableTimer = null;
+		}
+	};
 
 	const onConnectionClose = ( event ) => {
-		sessionReconnectPending = event.code === SESSION_TIMEOUT_CLOSE_CODE;
-	};
-	const onStatus = ( status ) => {
-		const bridgedStatus =
-			sessionReconnectPending && status.status === 'disconnected'
-				? {
-						...status,
-						willAutoRetryInMs: SESSION_RETRY_DELAY_MS,
-				  }
-				: status;
+		const retryable = ! isTerminalClose( event.code );
+		const closedBeforeStable = connectionStableTimer !== null;
+		clearConnectionStableTimer();
+		if (
+			retryable &&
+			( provider.wsconnected === false || closedBeforeStable )
+		) {
+			consecutiveFailedRetries += 1;
+		}
+		const providerFailedRetries =
+			provider.wsUnsuccessfulReconnects +
+			( provider.wsconnected === false ? 1 : 0 );
+		suppressNextDisconnected = provider.wsconnected === true;
+		const status = retryable
+			? {
+					status: 'disconnected',
+					willAutoRetryInMs: Math.min(
+						2 ** providerFailedRetries * 100,
+						provider.maxBackoffTime
+					),
+					backgroundRetriesFailed:
+						consecutiveFailedRetries >=
+						BACKGROUND_RETRIES_FAILED_THRESHOLD,
+			  }
+			: { status: 'disconnected' };
 
 		for ( const listener of [ ...listeners ] ) {
-			listener( bridgedStatus );
+			listener( status );
+		}
+	};
+	const onStatus = ( status ) => {
+		if ( status.status === 'disconnected' && suppressNextDisconnected ) {
+			suppressNextDisconnected = false;
+			return;
+		}
+
+		for ( const listener of [ ...listeners ] ) {
+			listener( status );
 		}
 
 		if ( status.status === 'connected' ) {
-			sessionReconnectPending = false;
+			clearConnectionStableTimer();
+			connectionStableTimer = setTimeout( () => {
+				consecutiveFailedRetries = 0;
+				connectionStableTimer = null;
+			}, CONNECTION_STABLE_RESET_DELAY_MS );
+			suppressNextDisconnected = false;
 		}
 	};
 
@@ -53,6 +101,11 @@ export function createProviderStatusBridge( provider ) {
 
 	const facadeMethods = {
 		destroy: () => {
+			if ( destroyed ) {
+				return;
+			}
+			destroyed = true;
+			clearConnectionStableTimer();
 			provider.off( 'connection-close', onConnectionClose );
 			provider.off( 'status', onStatus );
 			listeners.clear();
@@ -115,11 +168,13 @@ export function createProviderStatusBridge( provider ) {
  * @return {boolean} Whether the close was terminal.
  */
 export function handleConnectionClose( event, provider, notifyTerminalClose ) {
-	if ( event.code !== RESOURCE_LIMIT_CLOSE_CODE ) {
+	if ( ! isTerminalClose( event.code ) ) {
 		return false;
 	}
 
 	provider.disconnect();
-	notifyTerminalClose();
+	if ( event.code === RESOURCE_LIMIT_CLOSE_CODE ) {
+		notifyTerminalClose();
+	}
 	return true;
 }
