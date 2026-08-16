@@ -68,7 +68,7 @@ interface Env {
  *   - Awareness relay (cursor positions, user presence)
  * Document bytes remain in memory only. Gutenberg persists the canonical Yjs
  * snapshot in WordPress; y-partyserver re-syncs from connected clients after
- * hibernation and starts empty after every fully disconnected Worker restart.
+ * hibernation and resets the in-memory document after the final peer leaves.
  */
 export class Collaboration extends YServer {
   static options = {
@@ -267,6 +267,11 @@ export class Collaboration extends YServer {
     wasClean: boolean
   ): Promise<void> {
     await super.onClose(connection, code, reason, wasClean);
+    for (const _connection of this.getConnections()) {
+      return;
+    }
+    await this.resetDocument();
+    this.documentBudgetBytes = Y.encodeStateAsUpdate(this.document).byteLength;
     // Keep the existing earliest alarm. If its connection closed early, the
     // harmless extra wakeup will compact the schedule in one O(N) scan. This
     // avoids rescanning every remaining socket during mass disconnects.

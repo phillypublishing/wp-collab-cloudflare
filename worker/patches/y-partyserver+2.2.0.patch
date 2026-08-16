@@ -1,0 +1,376 @@
+diff --git a/node_modules/y-partyserver/dist/server/index.cjs b/node_modules/y-partyserver/dist/server/index.cjs
+index d2a21a7..9ff2301 100644
+--- a/node_modules/y-partyserver/dist/server/index.cjs
++++ b/node_modules/y-partyserver/dist/server/index.cjs
+@@ -92,9 +92,50 @@ function send(conn, m) {
+ function withYjs(Base) {
+   class YjsMixin extends Base {
+     static callbackOptions = {};
+-    document = new WSSharedDoc();
++    _document = new WSSharedDoc();
++    _saveDocument;
++    _savePromise = Promise.resolve();
++    get document() {
++      return this._document;
++    }
+     async onLoad() {}
+     async onSave() {}
++    /**
++     * Discards the current document and initializes a fresh one.
++     *
++     * Pending persistence is flushed before a replacement is restored through
++     * `onLoad()`. The old document remains active until loading succeeds, so a
++     * failed reset leaves the server on its previous usable document. The reset
++     * is allowed only when no connections remain so a connected client cannot
++     * immediately repopulate the old state.
++     */
++    async resetDocument() {
++      for (const _connection of this.getConnections())
++        throw new Error(
++          "Cannot reset a YServer document while connections are open"
++        );
++      let loadFailure;
++      await this.ctx.blockConcurrencyWhile(async () => {
++        this._saveDocument?.flush();
++        await this._savePromise;
++        const previousDocument = this._document;
++        const replacementDocument = new WSSharedDoc();
++        this._document = replacementDocument;
++        try {
++          await this._loadDocument();
++        } catch (error) {
++          this._document = previousDocument;
++          replacementDocument.destroy();
++          loadFailure = { error };
++          return;
++        }
++        this._saveDocument?.cancel();
++        this._saveDocument = void 0;
++        previousDocument.destroy();
++        this._attachDocumentListeners();
++      });
++      if (loadFailure) throw loadFailure.error;
++    }
+     /**
+      * Replaces the document with a different state using Yjs UndoManager key remapping.
+      *
+@@ -145,70 +186,70 @@ function withYjs(Base) {
+       }
+     }
+     async onStart() {
++      await this._loadDocument();
++      this._attachDocumentListeners();
++      const syncEncoder = lib0_encoding.createEncoder();
++      lib0_encoding.writeVarUint(syncEncoder, messageSync);
++      y_protocols_sync.writeSyncStep1(syncEncoder, this.document);
++      const syncMessage = lib0_encoding.toUint8Array(syncEncoder);
++      for (const conn of this.getConnections()) send(conn, syncMessage);
++    }
++    async _loadDocument() {
+       const src = await this.onLoad();
+       if (src != null) {
+         const state = (0, yjs.encodeStateAsUpdate)(src);
+         (0, yjs.applyUpdate)(this.document, state);
+       }
+-      this.document.on("update", (update) => {
++    }
++    _attachDocumentListeners() {
++      const document = this.document;
++      document.on("update", (update) => {
+         const encoder = lib0_encoding.createEncoder();
+         lib0_encoding.writeVarUint(encoder, messageSync);
+         y_protocols_sync.writeUpdate(encoder, update);
+         const message = lib0_encoding.toUint8Array(encoder);
+         for (const conn of this.getConnections()) send(conn, message);
+       });
+-      this.document.awareness.on(
+-        "update",
+-        ({ added, updated, removed }, conn) => {
+-          if (conn !== null)
+-            try {
+-              const currentIds = new Set(getAwarenessIds(conn));
+-              for (const clientID of added) currentIds.add(clientID);
+-              for (const clientID of removed) currentIds.delete(clientID);
+-              setAwarenessIds(conn, [...currentIds]);
+-            } catch (_e) {}
+-          else {
+-            const changedClients = added.concat(updated, removed);
+-            const encoder = lib0_encoding.createEncoder();
+-            lib0_encoding.writeVarUint(encoder, messageAwareness);
+-            lib0_encoding.writeVarUint8Array(
+-              encoder,
+-              y_protocols_awareness.encodeAwarenessUpdate(
+-                this.document.awareness,
+-                changedClients
+-              )
+-            );
+-            const buff = lib0_encoding.toUint8Array(encoder);
+-            for (const c of this.getConnections()) send(c, buff);
+-          }
++      document.awareness.on("update", ({ added, updated, removed }, conn) => {
++        if (conn !== null)
++          try {
++            const currentIds = new Set(getAwarenessIds(conn));
++            for (const clientID of added) currentIds.add(clientID);
++            for (const clientID of removed) currentIds.delete(clientID);
++            setAwarenessIds(conn, [...currentIds]);
++          } catch (_e) {}
++        else {
++          const changedClients = added.concat(updated, removed);
++          const encoder = lib0_encoding.createEncoder();
++          lib0_encoding.writeVarUint(encoder, messageAwareness);
++          lib0_encoding.writeVarUint8Array(
++            encoder,
++            y_protocols_awareness.encodeAwarenessUpdate(
++              document.awareness,
++              changedClients
++            )
++          );
++          const buff = lib0_encoding.toUint8Array(encoder);
++          for (const c of this.getConnections()) send(c, buff);
+         }
+-      );
++      });
+       const ctor = this.constructor;
+-      this.document.on(
+-        "update",
+-        (0, lodash_debounce.default)(
+-          (_update, _origin, _doc) => {
+-            try {
+-              this.onSave().catch((err) => {
+-                console.error("failed to persist:", err);
+-              });
+-            } catch (err) {
++      this._saveDocument = (0, lodash_debounce.default)(
++        (_update, _origin, _doc) => {
++          this._savePromise = this._savePromise
++            .then(() => this.onSave())
++            .catch((err) => {
+               console.error("failed to persist:", err);
+-            }
+-          },
+-          ctor.callbackOptions.debounceWait || CALLBACK_DEFAULTS.debounceWait,
+-          {
+-            maxWait:
+-              ctor.callbackOptions.debounceMaxWait ||
+-              CALLBACK_DEFAULTS.debounceMaxWait
+-          }
+-        )
++            });
++        },
++        ctor.callbackOptions.debounceWait || CALLBACK_DEFAULTS.debounceWait,
++        {
++          maxWait:
++            ctor.callbackOptions.debounceMaxWait ||
++            CALLBACK_DEFAULTS.debounceMaxWait
++        }
+       );
+-      const syncEncoder = lib0_encoding.createEncoder();
+-      lib0_encoding.writeVarUint(syncEncoder, messageSync);
+-      y_protocols_sync.writeSyncStep1(syncEncoder, this.document);
+-      const syncMessage = lib0_encoding.toUint8Array(syncEncoder);
+-      for (const conn of this.getConnections()) send(conn, syncMessage);
++      document.on("update", this._saveDocument);
+     }
+     isReadOnly(connection) {
+       return false;
+diff --git a/node_modules/y-partyserver/dist/server/index.d.cts b/node_modules/y-partyserver/dist/server/index.d.cts
+index 3291b0e..57f1887 100644
+--- a/node_modules/y-partyserver/dist/server/index.d.cts
++++ b/node_modules/y-partyserver/dist/server/index.d.cts
+@@ -24,6 +24,7 @@ interface YjsInstance {
+   readonly document: WSSharedDoc;
+   onLoad(): Promise<Doc | void>;
+   onSave(): Promise<void>;
++  resetDocument(): Promise<void>;
+   unstable_replaceDocument(
+     snapshotUpdate: Uint8Array,
+     getMetadata?: (key: string) => YjsRootType
+diff --git a/node_modules/y-partyserver/dist/server/index.d.ts b/node_modules/y-partyserver/dist/server/index.d.ts
+index 38bcaa7..1589ca6 100644
+--- a/node_modules/y-partyserver/dist/server/index.d.ts
++++ b/node_modules/y-partyserver/dist/server/index.d.ts
+@@ -24,6 +24,7 @@ interface YjsInstance {
+   readonly document: WSSharedDoc;
+   onLoad(): Promise<Doc | void>;
+   onSave(): Promise<void>;
++  resetDocument(): Promise<void>;
+   unstable_replaceDocument(
+     snapshotUpdate: Uint8Array,
+     getMetadata?: (key: string) => YjsRootType
+diff --git a/node_modules/y-partyserver/dist/server/index.js b/node_modules/y-partyserver/dist/server/index.js
+index 2028d1e..5652d26 100644
+--- a/node_modules/y-partyserver/dist/server/index.js
++++ b/node_modules/y-partyserver/dist/server/index.js
+@@ -93,9 +93,50 @@ function send(conn, m) {
+ function withYjs(Base) {
+   class YjsMixin extends Base {
+     static callbackOptions = {};
+-    document = new WSSharedDoc();
++    _document = new WSSharedDoc();
++    _saveDocument;
++    _savePromise = Promise.resolve();
++    get document() {
++      return this._document;
++    }
+     async onLoad() {}
+     async onSave() {}
++    /**
++     * Discards the current document and initializes a fresh one.
++     *
++     * Pending persistence is flushed before a replacement is restored through
++     * `onLoad()`. The old document remains active until loading succeeds, so a
++     * failed reset leaves the server on its previous usable document. The reset
++     * is allowed only when no connections remain so a connected client cannot
++     * immediately repopulate the old state.
++     */
++    async resetDocument() {
++      for (const _connection of this.getConnections())
++        throw new Error(
++          "Cannot reset a YServer document while connections are open"
++        );
++      let loadFailure;
++      await this.ctx.blockConcurrencyWhile(async () => {
++        this._saveDocument?.flush();
++        await this._savePromise;
++        const previousDocument = this._document;
++        const replacementDocument = new WSSharedDoc();
++        this._document = replacementDocument;
++        try {
++          await this._loadDocument();
++        } catch (error) {
++          this._document = previousDocument;
++          replacementDocument.destroy();
++          loadFailure = { error };
++          return;
++        }
++        this._saveDocument?.cancel();
++        this._saveDocument = void 0;
++        previousDocument.destroy();
++        this._attachDocumentListeners();
++      });
++      if (loadFailure) throw loadFailure.error;
++    }
+     /**
+      * Replaces the document with a different state using Yjs UndoManager key remapping.
+      *
+@@ -141,70 +182,70 @@ function withYjs(Base) {
+       }
+     }
+     async onStart() {
++      await this._loadDocument();
++      this._attachDocumentListeners();
++      const syncEncoder = encoding.createEncoder();
++      encoding.writeVarUint(syncEncoder, messageSync);
++      syncProtocol.writeSyncStep1(syncEncoder, this.document);
++      const syncMessage = encoding.toUint8Array(syncEncoder);
++      for (const conn of this.getConnections()) send(conn, syncMessage);
++    }
++    async _loadDocument() {
+       const src = await this.onLoad();
+       if (src != null) {
+         const state = encodeStateAsUpdate(src);
+         applyUpdate(this.document, state);
+       }
+-      this.document.on("update", (update) => {
++    }
++    _attachDocumentListeners() {
++      const document = this.document;
++      document.on("update", (update) => {
+         const encoder = encoding.createEncoder();
+         encoding.writeVarUint(encoder, messageSync);
+         syncProtocol.writeUpdate(encoder, update);
+         const message = encoding.toUint8Array(encoder);
+         for (const conn of this.getConnections()) send(conn, message);
+       });
+-      this.document.awareness.on(
+-        "update",
+-        ({ added, updated, removed }, conn) => {
+-          if (conn !== null)
+-            try {
+-              const currentIds = new Set(getAwarenessIds(conn));
+-              for (const clientID of added) currentIds.add(clientID);
+-              for (const clientID of removed) currentIds.delete(clientID);
+-              setAwarenessIds(conn, [...currentIds]);
+-            } catch (_e) {}
+-          else {
+-            const changedClients = added.concat(updated, removed);
+-            const encoder = encoding.createEncoder();
+-            encoding.writeVarUint(encoder, messageAwareness);
+-            encoding.writeVarUint8Array(
+-              encoder,
+-              awarenessProtocol.encodeAwarenessUpdate(
+-                this.document.awareness,
+-                changedClients
+-              )
+-            );
+-            const buff = encoding.toUint8Array(encoder);
+-            for (const c of this.getConnections()) send(c, buff);
+-          }
++      document.awareness.on("update", ({ added, updated, removed }, conn) => {
++        if (conn !== null)
++          try {
++            const currentIds = new Set(getAwarenessIds(conn));
++            for (const clientID of added) currentIds.add(clientID);
++            for (const clientID of removed) currentIds.delete(clientID);
++            setAwarenessIds(conn, [...currentIds]);
++          } catch (_e) {}
++        else {
++          const changedClients = added.concat(updated, removed);
++          const encoder = encoding.createEncoder();
++          encoding.writeVarUint(encoder, messageAwareness);
++          encoding.writeVarUint8Array(
++            encoder,
++            awarenessProtocol.encodeAwarenessUpdate(
++              document.awareness,
++              changedClients
++            )
++          );
++          const buff = encoding.toUint8Array(encoder);
++          for (const c of this.getConnections()) send(c, buff);
+         }
+-      );
++      });
+       const ctor = this.constructor;
+-      this.document.on(
+-        "update",
+-        debounce(
+-          (_update, _origin, _doc) => {
+-            try {
+-              this.onSave().catch((err) => {
+-                console.error("failed to persist:", err);
+-              });
+-            } catch (err) {
++      this._saveDocument = debounce(
++        (_update, _origin, _doc) => {
++          this._savePromise = this._savePromise
++            .then(() => this.onSave())
++            .catch((err) => {
+               console.error("failed to persist:", err);
+-            }
+-          },
+-          ctor.callbackOptions.debounceWait || CALLBACK_DEFAULTS.debounceWait,
+-          {
+-            maxWait:
+-              ctor.callbackOptions.debounceMaxWait ||
+-              CALLBACK_DEFAULTS.debounceMaxWait
+-          }
+-        )
++            });
++        },
++        ctor.callbackOptions.debounceWait || CALLBACK_DEFAULTS.debounceWait,
++        {
++          maxWait:
++            ctor.callbackOptions.debounceMaxWait ||
++            CALLBACK_DEFAULTS.debounceMaxWait
++        }
+       );
+-      const syncEncoder = encoding.createEncoder();
+-      encoding.writeVarUint(syncEncoder, messageSync);
+-      syncProtocol.writeSyncStep1(syncEncoder, this.document);
+-      const syncMessage = encoding.toUint8Array(syncEncoder);
+-      for (const conn of this.getConnections()) send(conn, syncMessage);
++      document.on("update", this._saveDocument);
+     }
+     isReadOnly(connection) {
+       return false;

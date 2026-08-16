@@ -248,8 +248,9 @@ Or via option: `wp option update wp_collab_cf_demo_post_id 123`
 
 4. The Durable Object keeps Yjs state in memory only. Gutenberg persists its
    CRDT snapshot in WordPress post meta, and connected clients re-sync the room
-   after hibernation. A fully disconnected Worker restart starts with an empty
-   relay and Gutenberg hydrates the client from WordPress. See
+   after hibernation. Closing the final peer resets the in-memory Yjs document,
+   so a later editor starts with an empty relay and Gutenberg hydrates it from
+   WordPress. See
    [SECURITY.md](SECURITY.md) for the persistence boundary and residual risks.
    This matches the relay/persistence split in Automattic's
    [VIP RTC reference](https://github.com/Automattic/vip-real-time-collaboration).
