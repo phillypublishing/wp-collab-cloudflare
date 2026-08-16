@@ -1,6 +1,6 @@
 {
   "name": "wp-collab-cloudflare-plugin",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
   "scripts": {
     "build": "wp-scripts build",
