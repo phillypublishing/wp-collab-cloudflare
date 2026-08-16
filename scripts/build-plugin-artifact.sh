@@ -24,20 +24,14 @@ if [[ ! "${source_date_epoch}" =~ ^[0-9]+$ ]]; then
 	exit 1
 fi
 
-version="$({
-	grep -m1 -E '^[[:space:]]*\*[[:space:]]*Version:' "${plugin_dir}/wp-collab-cf.php" || true
-} | sed -E 's/^[[:space:]]*\*[[:space:]]*Version:[[:space:]]*//; s/[[:space:]]*$//')"
-if [[ -z "${version}" || ! "${version}" =~ ^[A-Za-z0-9._+-]+$ ]]; then
-	echo 'Could not parse a filename-safe Version header from wp-collab-cf.php.' >&2
-	exit 1
-fi
-
-for command_name in npm 7z sha256sum node touch install dirname; do
+for command_name in npm 7z sha256sum node touch install dirname unzip; do
 	if ! command -v "${command_name}" >/dev/null 2>&1; then
 		echo "Required packaging command is unavailable: ${command_name}" >&2
 		exit 1
 	fi
 done
+
+version="$(node "${repo_root}/scripts/plugin-artifact.mjs" version "${plugin_dir}")"
 
 mkdir -p "${output_dir}"
 output_dir="$(cd "${output_dir}" && pwd)"
@@ -49,14 +43,11 @@ trap 'rm -rf "${stage}"' EXIT
 	npm run build
 )
 
-entries=(
-	wp-collab-cf/build/index.asset.php
-	wp-collab-cf/build/index.js
-	wp-collab-cf/includes/compatibility/memberpress-1-12-17.php
-	wp-collab-cf/includes/compatibility/meta-box-policy.php
-	wp-collab-cf/includes/compatibility/yoast-seo-premium-28-2.php
-	wp-collab-cf/wp-collab-cf.php
-)
+mapfile -t entries < <(node "${repo_root}/scripts/plugin-artifact.mjs" files)
+if [[ "${#entries[@]}" -eq 0 ]]; then
+	echo 'The plugin artifact allowlist is empty.' >&2
+	exit 1
+fi
 for entry in "${entries[@]}"; do
 	source_path="${plugin_dir}/${entry#wp-collab-cf/}"
 	destination_path="${stage}/${entry}"
@@ -123,6 +114,8 @@ fs.writeFileSync(
 	{ mode: 0o644 }
 );
 NODE
+
+node "${repo_root}/scripts/plugin-artifact.mjs" verify "${output_dir}"
 
 printf 'Built %s\n' "${artifact_path}"
 printf 'SHA-256 %s\n' "${artifact_sha256}"

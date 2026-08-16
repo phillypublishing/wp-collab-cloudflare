@@ -1,50 +1,70 @@
-name: WordPress plugin artifact
+name: WordPress plugin release
+
+# A plugin Version header bump on main is the release signal. Publication is a
+# resumable draft transaction for the same provenance-verified artifact as CI.
 
 on:
-  workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
-      - '.github/workflows/plugin-artifact.yml'
-      - 'plugin/wp-collab-cf/**'
-      - 'scripts/build-plugin-artifact.sh'
-      - 'scripts/plugin-artifact.mjs'
-      - 'tests/plugin-artifact.test.sh'
+      - 'plugin/wp-collab-cf/wp-collab-cf.php'
 
 permissions:
   contents: read
 
 concurrency:
-  group: plugin-artifact-${{ github.ref }}
+  group: wp-plugin-release
+  queue: max
   cancel-in-progress: false
 
 jobs:
-  build:
+  release:
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      ARTIFACT_DIR: ${{ runner.temp }}/plugin-release
     steps:
-      - name: Checkout
+      - name: Checkout release source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect plugin Version header change
+        id: version
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: node scripts/plugin-release.mjs detect
 
       - name: Set up Node.js
+        if: steps.version.outputs.release == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: plugin/wp-collab-cf/package-lock.json
 
-      - name: Install dependencies
+      - name: Install plugin build dependencies
+        if: steps.version.outputs.release == 'true'
         working-directory: plugin/wp-collab-cf
         run: npm ci
 
       - name: Test plugin
+        if: steps.version.outputs.release == 'true'
         working-directory: plugin/wp-collab-cf
         run: npm test
 
       - name: Audit production dependencies
+        if: steps.version.outputs.release == 'true'
         working-directory: plugin/wp-collab-cf
         run: npm audit --omit=dev --audit-level=high
 
       - name: Lint plugin PHP
+        if: steps.version.outputs.release == 'true'
         working-directory: plugin/wp-collab-cf
         run: |
           set -euo pipefail
@@ -56,6 +76,7 @@ jobs:
           xargs -0 -n1 php -l < "$compatibility_modules"
 
       - name: Test plugin PHP diagnostics
+        if: steps.version.outputs.release == 'true'
         working-directory: plugin/wp-collab-cf
         run: |
           php test/rtc-diagnostics.php
@@ -65,21 +86,20 @@ jobs:
           php test/compatibility-version-policy.php news-mismatch
           php test/compatibility-version-policy.php news-missing
 
-      - name: Build and verify reproducible artifact
+      - name: Build and verify release assets
+        if: steps.version.outputs.release == 'true'
         env:
           PLUGIN_ARTIFACT_ALLOW_DIRTY: 0
-        run: ./tests/plugin-artifact.test.sh "${RUNNER_TEMP}/plugin-artifact"
+        run: ./scripts/build-plugin-artifact.sh "${ARTIFACT_DIR}"
 
       - name: Lint generated plugin metadata
+        if: steps.version.outputs.release == 'true'
         run: php -l plugin/wp-collab-cf/build/index.asset.php
 
-      - name: Upload plugin artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: wp-collab-cf-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/plugin-artifact/*.zip
-            ${{ runner.temp }}/plugin-artifact/*.sha256
-            ${{ runner.temp }}/plugin-artifact/plugin-artifact-manifest.json
-          if-no-files-found: error
-          retention-days: 30
+      - name: Publish GitHub Release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/plugin-release.mjs publish "${ARTIFACT_DIR}"

@@ -46,14 +46,7 @@ expected_entries="${test_root}/expected-entries"
 actual_entries="${test_root}/actual-entries"
 expected_build_entries="${test_root}/expected-build-entries"
 actual_build_entries="${test_root}/actual-build-entries"
-cat > "${expected_entries}" <<'EOF'
-wp-collab-cf/build/index.asset.php
-wp-collab-cf/build/index.js
-wp-collab-cf/includes/compatibility/memberpress-1-12-17.php
-wp-collab-cf/includes/compatibility/meta-box-policy.php
-wp-collab-cf/includes/compatibility/yoast-seo-premium-28-2.php
-wp-collab-cf/wp-collab-cf.php
-EOF
+node "${repo_root}/scripts/plugin-artifact.mjs" files > "${expected_entries}"
 cat > "${expected_build_entries}" <<'EOF'
 index.asset.php
 index.js
@@ -63,55 +56,52 @@ diff -u "${expected_build_entries}" "${actual_build_entries}"
 unzip -Z1 "${first_zip}" > "${actual_entries}"
 diff -u "${expected_entries}" "${actual_entries}"
 
+node "${repo_root}/scripts/plugin-artifact.mjs" verify "${first_output_dir}"
+node "${repo_root}/scripts/plugin-artifact.mjs" verify "${test_root}/second"
+
+manifest_mismatch="${test_root}/manifest-version-mismatch"
+cp -a "${first_output_dir}" "${manifest_mismatch}"
 node -e '
-	const crypto = require( "node:crypto" );
 	const fs = require( "node:fs" );
-	const manifest = JSON.parse( fs.readFileSync( process.argv[ 1 ], "utf8" ) );
-	const expected = fs.readFileSync( process.argv[ 2 ], "utf8" ).trimEnd().split( "\n" );
-	const zip = process.argv[ 3 ];
-	const expectedCommit = process.argv[ 4 ];
-	const expectedBuiltAt = process.argv[ 5 ];
-	const expectedRepository = process.argv[ 6 ];
-	const expectedRef = process.argv[ 7 ];
-	const expectedVersion = process.argv[ 8 ];
-	const phpSource = fs.readFileSync( process.argv[ 9 ], "utf8" );
-	const phpVersion = phpSource.match(
-		/define\(\s*["\x27]WP_COLLAB_CF_VERSION["\x27]\s*,\s*["\x27]([^"\x27]+)["\x27]\s*\)/
-	)?.[ 1 ];
-	const expectedSha256 = crypto.createHash( "sha256" ).update( fs.readFileSync( zip ) ).digest( "hex" );
-	const expectedArtifact = require( "node:path" ).basename( zip );
-	if ( manifest.schema !== "wp-collab-cf-plugin-artifact/v1" ) {
-		throw new Error( "Manifest schema is not recognized." );
-	}
-	if ( JSON.stringify( manifest.files ) !== JSON.stringify( expected ) ) {
-		throw new Error( "Manifest files do not match the ZIP allowlist." );
-	}
-	if ( phpVersion !== expectedVersion ) {
-		throw new Error( "PHP plugin version does not match package.json." );
-	}
-	for ( const [ field, actual, wanted ] of [
-		[ "commit", manifest.commit, expectedCommit ],
-		[ "artifact", manifest.artifact, expectedArtifact ],
-		[ "sha256", manifest.sha256, expectedSha256 ],
-		[ "builtAt", manifest.builtAt, expectedBuiltAt ],
-		[ "repository", manifest.repository, expectedRepository ],
-		[ "ref", manifest.ref, expectedRef ],
-		[ "pluginVersion", manifest.pluginVersion, expectedVersion ],
-	] ) {
-		if ( actual !== wanted ) {
-			throw new Error( `Manifest ${ field } does not match the packaged source.` );
-		}
-	}
-' \
-	"${first_manifest}" \
-	"${expected_entries}" \
-	"${first_zip}" \
-	"$(git -C "${repo_root}" rev-parse HEAD)" \
-	"$(git -C "${repo_root}" show -s --format=%cI HEAD | node -p 'new Date(require("node:fs").readFileSync(0, "utf8").trim()).toISOString()')" \
-	"${GITHUB_REPOSITORY:-local}" \
-	"${GITHUB_REF_NAME:-$(git -C "${repo_root}" branch --show-current)}" \
-	"$(node -p 'require(process.argv[1]).version' "${repo_root}/plugin/wp-collab-cf/package.json")" \
-	"${repo_root}/plugin/wp-collab-cf/wp-collab-cf.php"
+	const file = process.argv[ 1 ];
+	const manifest = JSON.parse( fs.readFileSync( file, "utf8" ) );
+	manifest.pluginVersion = "0.0.0-mismatch";
+	fs.writeFileSync( file, `${ JSON.stringify( manifest, null, 2 ) }\n` );
+' "${manifest_mismatch}/plugin-artifact-manifest.json"
+if node "${repo_root}/scripts/plugin-artifact.mjs" verify "${manifest_mismatch}" \
+	> "${test_root}/manifest-version-mismatch.log" 2>&1; then
+	echo 'Artifact verifier accepted a mismatched manifest version.' >&2
+	exit 1
+fi
+grep -Fq 'Manifest pluginVersion does not match the source commit.' \
+	"${test_root}/manifest-version-mismatch.log"
+
+allowlist_mismatch="${test_root}/manifest-allowlist-mismatch"
+cp -a "${first_output_dir}" "${allowlist_mismatch}"
+node -e '
+	const fs = require( "node:fs" );
+	const file = process.argv[ 1 ];
+	const manifest = JSON.parse( fs.readFileSync( file, "utf8" ) );
+	manifest.files.pop();
+	fs.writeFileSync( file, `${ JSON.stringify( manifest, null, 2 ) }\n` );
+' "${allowlist_mismatch}/plugin-artifact-manifest.json"
+if node "${repo_root}/scripts/plugin-artifact.mjs" verify "${allowlist_mismatch}" \
+	> "${test_root}/manifest-allowlist-mismatch.log" 2>&1; then
+	echo 'Artifact verifier accepted a mismatched manifest allowlist.' >&2
+	exit 1
+fi
+grep -Fq 'Manifest files does not match the source commit.' \
+	"${test_root}/manifest-allowlist-mismatch.log"
+
+checksum_mismatch="${test_root}/checksum-mismatch"
+cp -a "${first_output_dir}" "${checksum_mismatch}"
+printf 'corrupt\n' > "${checksum_mismatch}/$(basename "${first_zip}").sha256"
+if node "${repo_root}/scripts/plugin-artifact.mjs" verify "${checksum_mismatch}" \
+	> "${test_root}/checksum-mismatch.log" 2>&1; then
+	echo 'Artifact verifier accepted a mismatched checksum.' >&2
+	exit 1
+fi
+grep -Fq 'Checksum does not match the source commit.' "${test_root}/checksum-mismatch.log"
 
 (
 	cd "$(dirname "${first_zip}")"

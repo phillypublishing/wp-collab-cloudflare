@@ -103,6 +103,15 @@ npm --prefix plugin/wp-collab-cf ci
 (cd dist && sha256sum --check wp-collab-cf-*.zip.sha256)
 ```
 
+Merging a changed plugin `Version:` header to `main` publishes the same
+allowlisted assets as a GitHub Release tagged `wp-collab-cf-v<version>`. A
+matching draft is safely resumed after an interrupted upload; conflicting tags,
+releases, or assets are refused. The header, runtime constant, package version,
+manifest, ZIP, and checksum must all agree before the draft is published. A
+retry keeps already-verified assets and uploads only missing files to the
+verified release ID. Plugin tests, the production dependency audit, PHP lint,
+and PHP diagnostics also pass before publication.
+
 For editable development instead:
 
 ```bash
