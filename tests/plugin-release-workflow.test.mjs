@@ -148,7 +148,8 @@ assert.deepEqual( job.permissions, { contents: 'write' }, 'Only the release job 
 assert.equal( job.if, "github.ref == 'refs/heads/main'", 'Release job must guard the main ref.' );
 assert.equal( job[ 'runs-on' ], 'ubuntu-latest', 'Release job must use the expected hosted runner.' );
 assert.equal( job[ 'timeout-minutes' ], 15, 'Release job must have a bounded timeout.' );
-assert.ok( ! Object.hasOwn( job.env, 'GH_TOKEN' ), 'The write token must not be job-scoped.' );
+assert.ok( ! Object.hasOwn( job.env ?? {}, 'GH_TOKEN' ), 'The write token must not be job-scoped.' );
+assert.ok( ! JSON.stringify( job.env ?? {} ).includes( 'runner.temp' ), 'Runner context must not be evaluated at job scope.' );
 
 const stepsByName = new Map( job.steps.map( ( step ) => [step.name, step] ) );
 const checkout = stepsByName.get( 'Checkout release source' );
@@ -180,8 +181,10 @@ for ( const mode of ['rtc-diagnostics.php', 'compatibility-adapters.php', 'absen
 	assert.ok( diagnostics.run.includes( mode ), `Release diagnostics must cover ${ mode }.` );
 }
 assert.equal( build.run, './scripts/build-plugin-artifact.sh "${ARTIFACT_DIR}"', 'Release must use the canonical artifact builder.' );
+assert.equal( build.env.ARTIFACT_DIR, '${{ runner.temp }}/plugin-release', 'Artifact output must use step-scoped runner temp.' );
 assert.equal( generatedLint.run, 'php -l plugin/wp-collab-cf/build/index.asset.php', 'Release must lint generated runtime metadata.' );
 assert.equal( publish.run, 'node scripts/plugin-release.mjs publish "${ARTIFACT_DIR}"', 'Publishing must use the state machine.' );
+assert.equal( publish.env.ARTIFACT_DIR, '${{ runner.temp }}/plugin-release', 'Publishing must reuse the step-scoped artifact path.' );
 for ( const step of [install, pluginTest, audit, lint, diagnostics, build, generatedLint] ) {
 	assert.ok( ! Object.hasOwn( step.env ?? {}, 'GH_TOKEN' ), `${ step.name } must not receive the write token.` );
 }

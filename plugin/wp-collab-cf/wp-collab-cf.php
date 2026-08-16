@@ -2,12 +2,12 @@
 /**
  * Plugin Name: WP Collab Cloudflare
  * Description: Routes WordPress 7.0 real-time collaboration through a Cloudflare Workers relay instead of HTTP polling.
- * Version: 0.5.2
+ * Version: 0.5.3
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WP_COLLAB_CF_VERSION', '0.5.2' );
+define( 'WP_COLLAB_CF_VERSION', '0.5.3' );
 
 require_once __DIR__ . '/includes/compatibility/memberpress-1-12-17.php';
 require_once __DIR__ . '/includes/compatibility/yoast-seo-premium-28-2.php';
