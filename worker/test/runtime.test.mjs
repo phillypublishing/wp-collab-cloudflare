@@ -833,6 +833,11 @@ test("workerd accepts a WordPress-sized snapshot into an empty relay", runtimeTe
   assert.ok(snapshot.byteLength <= 1_500_000);
   writer.socket.send(syncMessage(2, snapshot));
 
+  const seedConfirmation = waitForSyncUpdate(writer.socket);
+  const seedQuery = new Y.Doc();
+  writer.socket.send(syncMessage(0, Y.encodeStateVector(seedQuery)));
+  await seedConfirmation;
+
   const reader = await connect(runtime);
   const updatePromise = waitForSyncUpdate(reader.socket);
   const readerState = new Y.Doc();
@@ -841,6 +846,7 @@ test("workerd accepts a WordPress-sized snapshot into an empty relay", runtimeTe
   assert.equal(readerState.getText("content").length, 600_000);
 
   source.destroy();
+  seedQuery.destroy();
   readerState.destroy();
   await closeSocket(reader.socket, "snapshot reader socket");
   await closeSocket(writer.socket, "snapshot writer socket");
