@@ -754,13 +754,10 @@ for (const { label, disconnect } of finalPeerDisconnectScenarios) {
       const observer = await connect(runtime);
       const relayOnly = new Y.Doc();
       relayOnly.getText("content").insert(0, "relay-only state");
+      const initialObserverUpdate = waitForSyncUpdate(observer.socket);
       writer.socket.send(syncMessage(2, Y.encodeStateAsUpdate(relayOnly)));
 
-      const initialObserverUpdate = waitForSyncUpdate(observer.socket);
       const observerState = new Y.Doc();
-      observer.socket.send(
-        syncMessage(0, Y.encodeStateVector(observerState))
-      );
       Y.applyUpdate(observerState, await initialObserverUpdate);
       assert.equal(
         observerState.getText("content").toString(),
