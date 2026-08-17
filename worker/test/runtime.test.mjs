@@ -731,79 +731,91 @@ test("workerd does not retain Yjs state after a runtime restart", runtimeTestOpt
   await closeSocket(reader.socket, "restart reader socket");
 });
 
-const finalPeerLifecycleOptions =
-  process.env.WP_COLLAB_RUN_FINAL_PEER_CHARACTERIZATION === "1"
-    ? runtimeTestOptions
-    : {
-        ...runtimeTestOptions,
-        skip:
-          "Blocked: PartyServer/YServer exposes no supported in-memory room reset, and DurableObjectState.abort() logs an operator error and is unavailable in local development.",
-      };
+const finalPeerDisconnectScenarios = [
+  { label: "normal close", disconnect: closeSocket },
+  { label: "abnormal close", disconnect: terminateSocket },
+];
 
-test("workerd discards Yjs state when the final peer leaves", finalPeerLifecycleOptions, async (t) => {
-  const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-final-peer-"));
-  const runtime = createRuntime(persistPath);
-  t.after(async () => {
-    await runtime.dispose();
-    await rm(persistPath, { recursive: true, force: true });
-  });
+for (const { label, disconnect } of finalPeerDisconnectScenarios) {
+  test(
+    `workerd discards Yjs state after the final peer's ${label}`,
+    runtimeTestOptions,
+    async (t) => {
+      const persistPath = await mkdtemp(
+        path.join(tmpdir(), "wp-collab-final-peer-")
+      );
+      const runtime = createRuntime(persistPath);
+      t.after(async () => {
+        await runtime.dispose();
+        await rm(persistPath, { recursive: true, force: true });
+      });
 
-  const writer = await connect(runtime);
-  const observer = await connect(runtime);
-  const relayOnly = new Y.Doc();
-  relayOnly.getText("content").insert(0, "relay-only state");
-  writer.socket.send(syncMessage(2, Y.encodeStateAsUpdate(relayOnly)));
+      const writer = await connect(runtime);
+      const observer = await connect(runtime);
+      const relayOnly = new Y.Doc();
+      relayOnly.getText("content").insert(0, "relay-only state");
+      const initialObserverUpdate = waitForSyncUpdate(observer.socket);
+      writer.socket.send(syncMessage(2, Y.encodeStateAsUpdate(relayOnly)));
 
-  const initialObserverUpdate = waitForSyncUpdate(observer.socket);
-  const observerState = new Y.Doc();
-  observer.socket.send(syncMessage(0, Y.encodeStateVector(observerState)));
-  Y.applyUpdate(observerState, await initialObserverUpdate);
-  assert.equal(observerState.getText("content").toString(), "relay-only state");
+      const observerState = new Y.Doc();
+      Y.applyUpdate(observerState, await initialObserverUpdate);
+      assert.equal(
+        observerState.getText("content").toString(),
+        "relay-only state"
+      );
 
-  await terminateSocket(writer.socket, "first abnormal writer socket");
-  const remainingPeerUpdate = waitForSyncUpdate(observer.socket);
-  const remainingPeerState = new Y.Doc();
-  observer.socket.send(syncMessage(0, Y.encodeStateVector(remainingPeerState)));
-  Y.applyUpdate(remainingPeerState, await remainingPeerUpdate);
-  assert.equal(
-    remainingPeerState.getText("content").toString(),
-    "relay-only state",
-    "closing the first of two peers must not reset the room"
+      await closeSocket(writer.socket, "first writer socket");
+      const remainingPeerUpdate = waitForSyncUpdate(observer.socket);
+      const remainingPeerState = new Y.Doc();
+      observer.socket.send(
+        syncMessage(0, Y.encodeStateVector(remainingPeerState))
+      );
+      Y.applyUpdate(remainingPeerState, await remainingPeerUpdate);
+      assert.equal(
+        remainingPeerState.getText("content").toString(),
+        "relay-only state",
+        "closing the first of two peers must not reset the room"
+      );
+
+      await disconnect(observer.socket, `final peer ${label}`);
+
+      const reader = await connect(runtime);
+      const emptyUpdate = waitForSyncUpdate(reader.socket);
+      const emptyState = new Y.Doc();
+      reader.socket.send(syncMessage(0, Y.encodeStateVector(emptyState)));
+      Y.applyUpdate(emptyState, await emptyUpdate);
+      assert.equal(
+        emptyState.getText("content").toString(),
+        "",
+        "a later peer must not receive relay-only state from the previous session"
+      );
+
+      const wordpressState = new Y.Doc();
+      wordpressState.getText("content").insert(0, "rehydrated from WordPress");
+      reader.socket.send(
+        syncMessage(2, Y.encodeStateAsUpdate(wordpressState))
+      );
+      const rehydratedUpdate = waitForSyncUpdate(reader.socket);
+      const rehydratedQuery = new Y.Doc();
+      reader.socket.send(
+        syncMessage(0, Y.encodeStateVector(rehydratedQuery))
+      );
+      Y.applyUpdate(rehydratedQuery, await rehydratedUpdate);
+      assert.equal(
+        rehydratedQuery.getText("content").toString(),
+        "rehydrated from WordPress"
+      );
+
+      relayOnly.destroy();
+      observerState.destroy();
+      remainingPeerState.destroy();
+      emptyState.destroy();
+      wordpressState.destroy();
+      rehydratedQuery.destroy();
+      await closeSocket(reader.socket, "rehydrated reader socket");
+    }
   );
-
-  await terminateSocket(observer.socket, "final abnormal peer socket");
-
-  const reader = await connect(runtime);
-  const emptyUpdate = waitForSyncUpdate(reader.socket);
-  const emptyState = new Y.Doc();
-  reader.socket.send(syncMessage(0, Y.encodeStateVector(emptyState)));
-  Y.applyUpdate(emptyState, await emptyUpdate);
-  assert.equal(
-    emptyState.getText("content").toString(),
-    "",
-    "a later peer must not receive relay-only state from the previous session"
-  );
-
-  const wordpressState = new Y.Doc();
-  wordpressState.getText("content").insert(0, "rehydrated from WordPress");
-  reader.socket.send(syncMessage(2, Y.encodeStateAsUpdate(wordpressState)));
-  const rehydratedUpdate = waitForSyncUpdate(reader.socket);
-  const rehydratedQuery = new Y.Doc();
-  reader.socket.send(syncMessage(0, Y.encodeStateVector(rehydratedQuery)));
-  Y.applyUpdate(rehydratedQuery, await rehydratedUpdate);
-  assert.equal(
-    rehydratedQuery.getText("content").toString(),
-    "rehydrated from WordPress"
-  );
-
-  relayOnly.destroy();
-  observerState.destroy();
-  remainingPeerState.destroy();
-  emptyState.destroy();
-  wordpressState.destroy();
-  rehydratedQuery.destroy();
-  await closeSocket(reader.socket, "rehydrated reader socket");
-});
+}
 
 test("workerd accepts a WordPress-sized snapshot into an empty relay", runtimeTestOptions, async (t) => {
   const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-hydrate-"));

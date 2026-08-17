@@ -7,6 +7,7 @@
     "dev": "wrangler dev",
     "deploy:staging": "wrangler deploy --env staging",
     "deploy:production": "wrangler deploy --env production",
+    "postinstall": "patch-package",
     "test": "node --test test/auth.test.mjs test/deployment-config.test.mjs test/ephemeral-relay.test.mjs test/limits.test.mjs test/observability.test.mjs",
     "test:runtime": "wrangler deploy --dry-run --env staging --outdir .wrangler-dist/runtime-test && node --test test/runtime.test.mjs",
     "typecheck": "tsc",
@@ -14,13 +15,14 @@
     "check": "npm test && npm run typecheck && npm run test:runtime && npm run check:deploy && npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
-    "partyserver": "^0.4.0",
-    "y-partyserver": "^2.1.4",
+    "partyserver": "0.5.10",
+    "y-partyserver": "2.2.0",
     "yjs": "^13.6.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250313.0",
     "miniflare": "4.20260401.0",
+    "patch-package": "^8.0.1",
     "typescript": "^5.7.0",
     "ws": "8.18.0",
     "wrangler": "^4.0.0"

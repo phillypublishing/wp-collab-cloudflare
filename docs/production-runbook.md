@@ -239,19 +239,20 @@ sampled observability and bounded incident windows.
 
 ## Ephemeral room lifecycle
 
-The Worker stores no Yjs document bytes. A room may remain in memory while its
-Durable Object instance is live, and connected clients re-sync it after
-hibernation. Once no client can provide state and the Worker restarts or the
-instance is evicted, the relay starts empty. Gutenberg then loads the durable
-CRDT snapshot and current entity values from WordPress.
+The Worker stores no Yjs document bytes. A room remains in memory while peers
+are connected, and connected clients re-sync it after hibernation. When the
+final WebSocket closes, the Worker calls YServer's `resetDocument()` lifecycle
+seam: pending saves are flushed, the old Y.Doc and awareness state are
+destroyed, and a fresh document is initialized through `onLoad()`. For this
+ephemeral relay, `onLoad()` restores no document bytes, so a later editor starts
+empty and Gutenberg loads the durable CRDT snapshot and current entity values
+from WordPress.
 
-Closing the final WebSocket is not currently a synchronous reset boundary.
-PartyServer/YServer exposes no supported hook that disposes only the in-memory
-room document, while `DurableObjectState.abort()` emits an operator-visible
-JavaScript error and is unavailable under local Wrangler development. The
-opt-in `WP_COLLAB_RUN_FINAL_PEER_CHARACTERIZATION=1` workerd test preserves the
-desired last-peer contract as executable failing evidence; ordinary runtime QA
-skips it until the upstream lifecycle has a production-safe reset seam.
+The reset refuses to run while another connection remains. Ordinary workerd QA
+proves the boundary for both normal and abnormal final-peer closes, proves the
+first of multiple peers cannot reset shared state, and proves the fresh room
+accepts WordPress rehydration. The same behavior also follows Worker restart or
+Durable Object eviction.
 
 This applies equally to collection rooms. Their Yjs document carries only a
 lightweight invalidation signal; authoritative records remain in WordPress and
