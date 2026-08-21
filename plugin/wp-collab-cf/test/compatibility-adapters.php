@@ -3,10 +3,10 @@
 define( 'ABSPATH', '/wordpress/' );
 define( 'WP_PLUGIN_DIR', '/wordpress/wp-content/plugins' );
 define( 'WPMU_PLUGIN_DIR', '/wordpress/wp-content/mu-plugins' );
-define( 'WPSEO_VERSION', '28.2' );
-define( 'WPSEO_PREMIUM_VERSION', '28.2' );
-define( 'WPSEO_NEWS_VERSION', '13.3' );
-define( 'MEPR_VERSION', '1.12.17' );
+define( 'WPSEO_VERSION', '28.3' );
+define( 'WPSEO_PREMIUM_VERSION', '28.3' );
+define( 'WPSEO_NEWS_VERSION', '13.4' );
+define( 'MEPR_VERSION', '1.12.18' );
 
 error_reporting( E_ALL );
 set_error_handler(
@@ -343,11 +343,35 @@ for ( $depth = 0; $depth < 40; $depth++ ) {
 $compat_parsed_blocks['too-deep'] = array( $too_deep );
 compat_assert_same( 'uncertain', wp_collab_cf_yoast_inspect_post_content( 'too-deep' )['state'], 'Traversal bounds must fail closed.' );
 
-compat_assert_true( wp_collab_cf_yoast_versions_supported( '28.2', '28.2' ), 'The characterized Yoast pair should be supported.' );
-compat_assert_same( false, wp_collab_cf_yoast_versions_supported( '28.2.1', '28.2' ), 'Yoast Core drift must be rejected.' );
-compat_assert_same( false, wp_collab_cf_yoast_versions_supported( '28.2', '28.3' ), 'Yoast Premium drift must be rejected.' );
-compat_assert_true( wp_collab_cf_memberpress_version_supported( '1.12.17' ), 'The characterized MemberPress version should be supported.' );
-compat_assert_same( false, wp_collab_cf_memberpress_version_supported( '1.12.18' ), 'MemberPress version drift must be rejected.' );
+compat_assert_true( wp_collab_cf_yoast_versions_supported( '28.2', '28.2' ), 'The minimum supported Yoast pair should be supported.' );
+compat_assert_true( wp_collab_cf_yoast_versions_supported( '28.2.1', '28.3' ), 'Newer Yoast Core and Premium releases should remain supported.' );
+compat_assert_true( wp_collab_cf_yoast_versions_supported( '29.0', '29.1' ), 'Yoast support should not impose an upper version bound.' );
+compat_assert_same( false, wp_collab_cf_yoast_versions_supported( '28.1.99', '28.3' ), 'Yoast Core below the minimum must be rejected.' );
+compat_assert_same( false, wp_collab_cf_yoast_versions_supported( '28.3', '28.1.99' ), 'Yoast Premium below the minimum must be rejected.' );
+compat_assert_same( false, wp_collab_cf_yoast_versions_supported( 'not-a-version', '28.3' ), 'Malformed Yoast versions must be rejected.' );
+compat_assert_true( wp_collab_cf_memberpress_version_supported( '1.12.17' ), 'The minimum supported MemberPress version should be supported.' );
+compat_assert_true( wp_collab_cf_memberpress_version_supported( '1.12.18' ), 'Newer MemberPress releases should remain supported.' );
+compat_assert_true( wp_collab_cf_memberpress_version_supported( '2.0' ), 'MemberPress support should not impose an upper version bound.' );
+compat_assert_same( false, wp_collab_cf_memberpress_version_supported( '1.12.16' ), 'MemberPress versions below the minimum must be rejected.' );
+compat_assert_same( false, wp_collab_cf_memberpress_version_supported( 'not-a-version' ), 'Malformed MemberPress versions must be rejected.' );
+$memberpress_diagnostics = wp_collab_cf_memberpress_default_diagnostics();
+compat_assert_same( 'memberpress_scale_1_12_17', $memberpress_diagnostics['adapter'], 'The diagnostics/v1 MemberPress adapter ID must remain stable.' );
+compat_assert_same( 'memberpress_scale', $memberpress_diagnostics['policyId'], 'MemberPress diagnostics should expose a version-independent policy ID.' );
+compat_assert_same( 'minimum', $memberpress_diagnostics['versionPolicy'], 'MemberPress diagnostics should expose the minimum-version policy.' );
+compat_assert_same( '1.12.17', $memberpress_diagnostics['minimumVersions']['memberpress'], 'MemberPress diagnostics should expose the supported minimum.' );
+$yoast_diagnostics = wp_collab_cf_yoast_default_diagnostics();
+compat_assert_same( 'yoast_seo_core_premium_28_2', $yoast_diagnostics['adapter'], 'The diagnostics/v1 Yoast adapter ID must remain stable.' );
+compat_assert_same( 'yoast_seo_core_premium', $yoast_diagnostics['policyId'], 'Yoast diagnostics should expose a version-independent policy ID.' );
+compat_assert_same( 'minimum', $yoast_diagnostics['versionPolicy'], 'Yoast diagnostics should expose the minimum-version policy.' );
+compat_assert_same(
+	array(
+		'core'    => '28.2',
+		'premium' => '28.2',
+		'news'    => '13.3',
+	),
+	$yoast_diagnostics['minimumVersions'],
+	'Yoast diagnostics should expose each supported minimum.'
+);
 compat_assert_same(
 	array(),
 	wp_collab_cf_yoast_find_unsupported_addons( $compat_options['active_plugins'] ),
@@ -360,8 +384,11 @@ compat_assert_same(
 	),
 	'The exact News main plugin file is handled by its own version policy.'
 );
-compat_assert_true( wp_collab_cf_yoast_news_version_supported( '13.3' ), 'The characterized Yoast News version should be supported.' );
-compat_assert_same( false, wp_collab_cf_yoast_news_version_supported( '13.4' ), 'Yoast News version drift must be rejected.' );
+compat_assert_true( wp_collab_cf_yoast_news_version_supported( '13.3' ), 'The minimum supported Yoast News version should be supported.' );
+compat_assert_true( wp_collab_cf_yoast_news_version_supported( '13.4' ), 'Newer Yoast News releases should remain supported.' );
+compat_assert_true( wp_collab_cf_yoast_news_version_supported( '14.0' ), 'Yoast News support should not impose an upper version bound.' );
+compat_assert_same( false, wp_collab_cf_yoast_news_version_supported( '13.2.99' ), 'Yoast News versions below the minimum must be rejected.' );
+compat_assert_same( false, wp_collab_cf_yoast_news_version_supported( 'not-a-version' ), 'Malformed Yoast News versions must be rejected.' );
 compat_assert_same(
 	array( 'unsupported' ),
 	wp_collab_cf_yoast_find_unsupported_addons(
@@ -446,7 +473,7 @@ $diagnostics = wp_collab_cf_get_compatibility_adapter_diagnostics();
 compat_assert_same( true, $diagnostics['memberpress']['eligible'], 'MemberPress eligibility was not reported.' );
 compat_assert_same( true, $diagnostics['memberpress']['applied'], 'MemberPress application was not reported.' );
 compat_assert_same( 'applied', $diagnostics['memberpress']['reason'], 'MemberPress needs a stable applied reason.' );
-compat_assert_same( '1.12.17', $diagnostics['memberpress']['version'], 'MemberPress diagnostics must report only the version.' );
+compat_assert_same( '1.12.18', $diagnostics['memberpress']['version'], 'MemberPress diagnostics must report only the version.' );
 
 compat_reset_adapter_state();
 $memberpress_mismatch = compat_registry(
@@ -571,12 +598,12 @@ $compat_styles = new Compat_Dependencies();
 foreach ( wp_collab_cf_yoast_denied_style_handles() as $handle ) {
 	$compat_styles->add( $handle );
 }
-compat_assert_same( false, wp_collab_cf_yoast_filter_editor_features( true ), 'Exact Yoast News 13.3 must use the Core owner suppression decision.' );
+compat_assert_same( false, wp_collab_cf_yoast_filter_editor_features( true ), 'Supported Yoast News releases must use the Core owner suppression decision.' );
 wp_collab_cf_yoast_prune_editor_assets();
 $filtered = wp_collab_cf_filter_block_editor_meta_boxes( compat_registry( array() ) );
 $news_diagnostics = wp_collab_cf_get_compatibility_adapter_diagnostics()['yoast'];
-compat_assert_same( 'applied', $news_diagnostics['reason'], 'Exact Yoast News 13.3 should apply with the characterized Core and Premium pair.' );
-compat_assert_same( '13.3', $news_diagnostics['newsVersion'], 'Yoast News diagnostics must report only the exact active version.' );
+compat_assert_same( 'applied', $news_diagnostics['reason'], 'A newer Yoast News release should apply with supported Core and Premium versions.' );
+compat_assert_same( '13.4', $news_diagnostics['newsVersion'], 'Yoast News diagnostics must report only the active version.' );
 compat_assert_true( in_array( 'wpseo-news-editor', $news_diagnostics['removedScriptHandles'], true ), 'The News editor bundle must be pruned with its missing owner surface.' );
 array_pop( $compat_options['active_plugins'] );
 

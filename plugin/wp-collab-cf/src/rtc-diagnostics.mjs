@@ -87,12 +87,29 @@ function normalizeCompatibilityAdapters( value ) {
 		typeof yoast.protectedContent === 'object'
 			? yoast.protectedContent
 			: {};
+	const memberpressMinimumVersions =
+		memberpress.minimumVersions &&
+		typeof memberpress.minimumVersions === 'object'
+			? memberpress.minimumVersions
+			: {};
+	const yoastMinimumVersions =
+		yoast.minimumVersions && typeof yoast.minimumVersions === 'object'
+			? yoast.minimumVersions
+			: {};
 
 	return {
 		memberpress: {
+			// Preserve the diagnostics/v1 discriminator for existing consumers.
 			adapter:
 				diagnosticString( memberpress.adapter ) ||
 				'memberpress_scale_1_12_17',
+			policyId: diagnosticString( memberpress.policyId ),
+			versionPolicy: diagnosticString( memberpress.versionPolicy ),
+			minimumVersions: {
+				memberpress: diagnosticString(
+					memberpressMinimumVersions.memberpress
+				),
+			},
 			configured: memberpress.configured === true,
 			eligible: memberpress.eligible === true,
 			applied: memberpress.applied === true,
@@ -100,9 +117,17 @@ function normalizeCompatibilityAdapters( value ) {
 			version: diagnosticString( memberpress.version ),
 		},
 		yoast: {
+			// Preserve the diagnostics/v1 discriminator for existing consumers.
 			adapter:
 				diagnosticString( yoast.adapter ) ||
 				'yoast_seo_core_premium_28_2',
+			policyId: diagnosticString( yoast.policyId ),
+			versionPolicy: diagnosticString( yoast.versionPolicy ),
+			minimumVersions: {
+				core: diagnosticString( yoastMinimumVersions.core ),
+				premium: diagnosticString( yoastMinimumVersions.premium ),
+				news: diagnosticString( yoastMinimumVersions.news ),
+			},
 			configured: yoast.configured === true,
 			eligible: yoast.eligible === true,
 			applied: yoast.applied === true,

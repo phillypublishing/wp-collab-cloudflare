@@ -1,11 +1,15 @@
 <?php
 /**
- * Yoast SEO Core + Premium 28.2 compatibility policy.
+ * Yoast SEO Core + Premium compatibility policy.
  *
  * @package WP_Collab_Cloudflare
  */
 
 defined( 'ABSPATH' ) || exit;
+
+const WP_COLLAB_CF_YOAST_CORE_MINIMUM_VERSION    = '28.2';
+const WP_COLLAB_CF_YOAST_PREMIUM_MINIMUM_VERSION = '28.2';
+const WP_COLLAB_CF_YOAST_NEWS_MINIMUM_VERSION    = '13.3';
 
 /**
  * Return the exact editor script entrypoints denied by this adapter.
@@ -74,7 +78,15 @@ function wp_collab_cf_yoast_protected_block_names() {
  */
 function wp_collab_cf_yoast_default_diagnostics( $configured = false ) {
 	return array(
+		// Stable diagnostics/v1 discriminator; use policyId for new integrations.
 		'adapter'                    => 'yoast_seo_core_premium_28_2',
+		'policyId'                   => 'yoast_seo_core_premium',
+		'versionPolicy'              => 'minimum',
+		'minimumVersions'            => array(
+			'core'    => WP_COLLAB_CF_YOAST_CORE_MINIMUM_VERSION,
+			'premium' => WP_COLLAB_CF_YOAST_PREMIUM_MINIMUM_VERSION,
+			'news'    => WP_COLLAB_CF_YOAST_NEWS_MINIMUM_VERSION,
+		),
 		'configured'                 => (bool) $configured,
 		'eligible'                   => false,
 		'applied'                    => false,
@@ -134,27 +146,25 @@ function wp_collab_cf_yoast_set_request_diagnostics( $diagnostics ) {
 }
 
 /**
- * Require the exact characterized Core and Premium versions.
+ * Require the characterized Core and Premium versions or newer.
  *
  * @param mixed $core_version    Core version.
  * @param mixed $premium_version Premium version.
- * @return bool Whether the pair is exactly supported.
+ * @return bool Whether both versions meet their supported minimums.
  */
 function wp_collab_cf_yoast_versions_supported( $core_version, $premium_version ) {
-	return is_string( $core_version ) &&
-		is_string( $premium_version ) &&
-		'28.2' === $core_version &&
-		'28.2' === $premium_version;
+	return wp_collab_cf_version_meets_minimum( $core_version, WP_COLLAB_CF_YOAST_CORE_MINIMUM_VERSION ) &&
+		wp_collab_cf_version_meets_minimum( $premium_version, WP_COLLAB_CF_YOAST_PREMIUM_MINIMUM_VERSION );
 }
 
 /**
- * Require the exact characterized Yoast SEO: News version.
+ * Require the characterized Yoast SEO: News version or newer.
  *
  * @param mixed $news_version News version.
- * @return bool Whether the version is exactly supported.
+ * @return bool Whether the version meets the supported minimum.
  */
 function wp_collab_cf_yoast_news_version_supported( $news_version ) {
-	return is_string( $news_version ) && '13.3' === $news_version;
+	return wp_collab_cf_version_meets_minimum( $news_version, WP_COLLAB_CF_YOAST_NEWS_MINIMUM_VERSION );
 }
 
 /**
