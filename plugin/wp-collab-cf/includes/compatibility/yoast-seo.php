@@ -78,7 +78,15 @@ function wp_collab_cf_yoast_protected_block_names() {
  */
 function wp_collab_cf_yoast_default_diagnostics( $configured = false ) {
 	return array(
-		'adapter'                    => 'yoast_seo_core_premium',
+		// Stable diagnostics/v1 discriminator; use policyId for new integrations.
+		'adapter'                    => 'yoast_seo_core_premium_28_2',
+		'policyId'                   => 'yoast_seo_core_premium',
+		'versionPolicy'              => 'minimum',
+		'minimumVersions'            => array(
+			'core'    => WP_COLLAB_CF_YOAST_CORE_MINIMUM_VERSION,
+			'premium' => WP_COLLAB_CF_YOAST_PREMIUM_MINIMUM_VERSION,
+			'news'    => WP_COLLAB_CF_YOAST_NEWS_MINIMUM_VERSION,
+		),
 		'configured'                 => (bool) $configured,
 		'eligible'                   => false,
 		'applied'                    => false,

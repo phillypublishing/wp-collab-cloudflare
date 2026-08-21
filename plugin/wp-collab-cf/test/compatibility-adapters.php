@@ -354,6 +354,24 @@ compat_assert_true( wp_collab_cf_memberpress_version_supported( '1.12.18' ), 'Ne
 compat_assert_true( wp_collab_cf_memberpress_version_supported( '2.0' ), 'MemberPress support should not impose an upper version bound.' );
 compat_assert_same( false, wp_collab_cf_memberpress_version_supported( '1.12.16' ), 'MemberPress versions below the minimum must be rejected.' );
 compat_assert_same( false, wp_collab_cf_memberpress_version_supported( 'not-a-version' ), 'Malformed MemberPress versions must be rejected.' );
+$memberpress_diagnostics = wp_collab_cf_memberpress_default_diagnostics();
+compat_assert_same( 'memberpress_scale_1_12_17', $memberpress_diagnostics['adapter'], 'The diagnostics/v1 MemberPress adapter ID must remain stable.' );
+compat_assert_same( 'memberpress_scale', $memberpress_diagnostics['policyId'], 'MemberPress diagnostics should expose a version-independent policy ID.' );
+compat_assert_same( 'minimum', $memberpress_diagnostics['versionPolicy'], 'MemberPress diagnostics should expose the minimum-version policy.' );
+compat_assert_same( '1.12.17', $memberpress_diagnostics['minimumVersions']['memberpress'], 'MemberPress diagnostics should expose the supported minimum.' );
+$yoast_diagnostics = wp_collab_cf_yoast_default_diagnostics();
+compat_assert_same( 'yoast_seo_core_premium_28_2', $yoast_diagnostics['adapter'], 'The diagnostics/v1 Yoast adapter ID must remain stable.' );
+compat_assert_same( 'yoast_seo_core_premium', $yoast_diagnostics['policyId'], 'Yoast diagnostics should expose a version-independent policy ID.' );
+compat_assert_same( 'minimum', $yoast_diagnostics['versionPolicy'], 'Yoast diagnostics should expose the minimum-version policy.' );
+compat_assert_same(
+	array(
+		'core'    => '28.2',
+		'premium' => '28.2',
+		'news'    => '13.3',
+	),
+	$yoast_diagnostics['minimumVersions'],
+	'Yoast diagnostics should expose each supported minimum.'
+);
 compat_assert_same(
 	array(),
 	wp_collab_cf_yoast_find_unsupported_addons( $compat_options['active_plugins'] ),

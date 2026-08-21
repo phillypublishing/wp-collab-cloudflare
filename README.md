@@ -208,9 +208,11 @@ matched, suppressed, unmatched, and remaining blocker IDs plus enabled,
 effective, and malformed-policy state. Remaining blockers and compatibility
 still come exclusively from Gutenberg's rendered meta-box store.
 `wpCollabCfDiagnostics.report().compatibilityAdapters` separately reports the
-sanitized MemberPress and Yoast adapter eligibility, application, version,
-owner-filter, protected-content, add-on, opaque dependency-count, and
-asset-pruning states.
+sanitized MemberPress and Yoast adapter eligibility, application, version
+policy, supported minimums, owner-filter, protected-content, add-on, opaque
+dependency-count, and asset-pruning states. The `adapter` values remain stable
+diagnostics/v1 compatibility aliases; new consumers should use the generic
+`policyId` together with `versionPolicy` and `minimumVersions`.
 It contains no post content, absolute paths, or proprietary plugin basenames.
 
 ### 5. Test

@@ -17,12 +17,18 @@ const WP_COLLAB_CF_MEMBERPRESS_MINIMUM_VERSION = '1.12.17';
  */
 function wp_collab_cf_memberpress_default_diagnostics( $configured = false ) {
 	return array(
-		'adapter'    => 'memberpress_scale',
-		'configured' => (bool) $configured,
-		'eligible'   => false,
-		'applied'    => false,
-		'reason'     => $configured ? 'not_evaluated' : 'not_configured',
-		'version'    => defined( 'MEPR_VERSION' ) && is_string( MEPR_VERSION ) ? MEPR_VERSION : null,
+		// Stable diagnostics/v1 discriminator; use policyId for new integrations.
+		'adapter'         => 'memberpress_scale_1_12_17',
+		'policyId'        => 'memberpress_scale',
+		'versionPolicy'   => 'minimum',
+		'minimumVersions' => array(
+			'memberpress' => WP_COLLAB_CF_MEMBERPRESS_MINIMUM_VERSION,
+		),
+		'configured'      => (bool) $configured,
+		'eligible'        => false,
+		'applied'         => false,
+		'reason'          => $configured ? 'not_evaluated' : 'not_configured',
+		'version'         => defined( 'MEPR_VERSION' ) && is_string( MEPR_VERSION ) ? MEPR_VERSION : null,
 	);
 }
 

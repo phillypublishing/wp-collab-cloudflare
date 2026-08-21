@@ -423,7 +423,10 @@ test( 'reports stable sanitized compatibility adapter state', () => {
 			...readyServerReport,
 			compatibilityAdapters: {
 				memberpress: {
-					adapter: 'memberpress_scale',
+					adapter: 'memberpress_scale_1_12_17',
+					policyId: 'memberpress_scale',
+					versionPolicy: 'minimum',
+					minimumVersions: { memberpress: '1.12.17' },
 					configured: true,
 					eligible: true,
 					applied: true,
@@ -432,7 +435,14 @@ test( 'reports stable sanitized compatibility adapter state', () => {
 					proprietaryPath: '/srv/memberpress/app/controllers/MeprAppCtrl.php',
 				},
 				yoast: {
-					adapter: 'yoast_seo_core_premium',
+					adapter: 'yoast_seo_core_premium_28_2',
+					policyId: 'yoast_seo_core_premium',
+					versionPolicy: 'minimum',
+					minimumVersions: {
+						core: '28.2',
+						premium: '28.2',
+						news: '13.3',
+					},
 					configured: true,
 					eligible: false,
 					applied: false,
@@ -464,12 +474,29 @@ test( 'reports stable sanitized compatibility adapter state', () => {
 	} );
 
 	assert.deepEqual( report.compatibilityAdapters.memberpress, {
-		adapter: 'memberpress_scale',
+		adapter: 'memberpress_scale_1_12_17',
+		policyId: 'memberpress_scale',
+		versionPolicy: 'minimum',
+		minimumVersions: { memberpress: '1.12.17' },
 		configured: true,
 		eligible: true,
 		applied: true,
 		reason: 'applied',
 		version: '1.12.17',
+	} );
+	assert.equal(
+		report.compatibilityAdapters.yoast.adapter,
+		'yoast_seo_core_premium_28_2'
+	);
+	assert.equal(
+		report.compatibilityAdapters.yoast.policyId,
+		'yoast_seo_core_premium'
+	);
+	assert.equal( report.compatibilityAdapters.yoast.versionPolicy, 'minimum' );
+	assert.deepEqual( report.compatibilityAdapters.yoast.minimumVersions, {
+		core: '28.2',
+		premium: '28.2',
+		news: '13.3',
 	} );
 	assert.equal( report.compatibilityAdapters.yoast.reason, 'protected_content' );
 	assert.equal( report.compatibilityAdapters.yoast.newsVersion, '13.3' );
