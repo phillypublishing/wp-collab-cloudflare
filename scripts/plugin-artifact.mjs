@@ -9,9 +9,10 @@ import { fileURLToPath } from 'node:url';
 export const PLUGIN_ARTIFACT_FILES = Object.freeze( [
 	'wp-collab-cf/build/index.asset.php',
 	'wp-collab-cf/build/index.js',
-	'wp-collab-cf/includes/compatibility/memberpress-1-12-17.php',
+	'wp-collab-cf/includes/compatibility/memberpress.php',
 	'wp-collab-cf/includes/compatibility/meta-box-policy.php',
-	'wp-collab-cf/includes/compatibility/yoast-seo-premium-28-2.php',
+	'wp-collab-cf/includes/compatibility/version-policy.php',
+	'wp-collab-cf/includes/compatibility/yoast-seo.php',
 	'wp-collab-cf/wp-collab-cf.php',
 ] );
 

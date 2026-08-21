@@ -1,11 +1,13 @@
 <?php
 /**
- * MemberPress Scale 1.12.17 compatibility policy.
+ * MemberPress Scale compatibility policy.
  *
  * @package WP_Collab_Cloudflare
  */
 
 defined( 'ABSPATH' ) || exit;
+
+const WP_COLLAB_CF_MEMBERPRESS_MINIMUM_VERSION = '1.12.17';
 
 /**
  * Return a sanitized default MemberPress adapter report.
@@ -15,7 +17,7 @@ defined( 'ABSPATH' ) || exit;
  */
 function wp_collab_cf_memberpress_default_diagnostics( $configured = false ) {
 	return array(
-		'adapter'    => 'memberpress_scale_1_12_17',
+		'adapter'    => 'memberpress_scale',
 		'configured' => (bool) $configured,
 		'eligible'   => false,
 		'applied'    => false,
@@ -35,17 +37,17 @@ function wp_collab_cf_memberpress_callback_matches( $callback ) {
 }
 
 /**
- * Require the exact characterized MemberPress version.
+ * Require the characterized MemberPress version or newer.
  *
  * @param mixed $version MemberPress version.
- * @return bool Whether the version is exactly supported.
+ * @return bool Whether the version meets the supported minimum.
  */
 function wp_collab_cf_memberpress_version_supported( $version ) {
-	return is_string( $version ) && '1.12.17' === $version;
+	return wp_collab_cf_version_meets_minimum( $version, WP_COLLAB_CF_MEMBERPRESS_MINIMUM_VERSION );
 }
 
 /**
- * Apply the exact-version MemberPress whole-box policy to a registry copy.
+ * Apply the minimum-version MemberPress whole-box policy to a registry copy.
  *
  * @param array  $wp_meta_boxes Meta box registry copy.
  * @param string $screen_id     Current screen identifier.

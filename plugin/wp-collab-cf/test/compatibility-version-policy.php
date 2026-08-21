@@ -10,18 +10,18 @@ define( 'ABSPATH', '/wordpress/' );
 define( 'WP_PLUGIN_DIR', '/wordpress/wp-content/plugins' );
 define( 'WPMU_PLUGIN_DIR', '/wordpress/wp-content/mu-plugins' );
 if ( 'mismatch' === $mode ) {
-	define( 'WPSEO_VERSION', '28.2.1' );
+	define( 'WPSEO_VERSION', '28.1.99' );
+	define( 'WPSEO_PREMIUM_VERSION', '28.3' );
+	define( 'MEPR_VERSION', '1.12.16' );
+} elseif ( 'news-mismatch' === $mode ) {
+	define( 'WPSEO_VERSION', '28.3' );
+	define( 'WPSEO_PREMIUM_VERSION', '28.3' );
+	define( 'WPSEO_NEWS_VERSION', '13.2.99' );
+	define( 'MEPR_VERSION', '1.12.18' );
+} elseif ( 'news-missing' === $mode ) {
+	define( 'WPSEO_VERSION', '28.3' );
 	define( 'WPSEO_PREMIUM_VERSION', '28.3' );
 	define( 'MEPR_VERSION', '1.12.18' );
-} elseif ( 'news-mismatch' === $mode ) {
-	define( 'WPSEO_VERSION', '28.2' );
-	define( 'WPSEO_PREMIUM_VERSION', '28.2' );
-	define( 'WPSEO_NEWS_VERSION', '13.4' );
-	define( 'MEPR_VERSION', '1.12.17' );
-} elseif ( 'news-missing' === $mode ) {
-	define( 'WPSEO_VERSION', '28.2' );
-	define( 'WPSEO_PREMIUM_VERSION', '28.2' );
-	define( 'MEPR_VERSION', '1.12.17' );
 }
 
 $version_filters = array();
@@ -126,9 +126,9 @@ version_policy_assert_same(
 	'Yoast did not fail closed for the version policy.'
 );
 if ( ! in_array( $mode, array( 'news-mismatch', 'news-missing' ), true ) ) {
-	version_policy_assert_same( false, $diagnostics['memberpress']['applied'], 'MemberPress must not apply outside the exact version.' );
+	version_policy_assert_same( false, $diagnostics['memberpress']['applied'], 'MemberPress must not apply below the minimum version.' );
 }
-version_policy_assert_same( false, $diagnostics['yoast']['applied'], 'Yoast must not apply outside the exact version pair.' );
+version_policy_assert_same( false, $diagnostics['yoast']['applied'], 'Yoast must not apply below the minimum version pair.' );
 version_policy_assert_same(
 	in_array( $mode, array( 'mismatch', 'news-mismatch', 'news-missing' ), true ),
 	isset( $filtered['post']['normal']['high']['wp_collab_cf_yoast_compatibility_blocker'] ),

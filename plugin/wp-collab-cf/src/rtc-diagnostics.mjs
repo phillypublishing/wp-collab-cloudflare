@@ -92,7 +92,7 @@ function normalizeCompatibilityAdapters( value ) {
 		memberpress: {
 			adapter:
 				diagnosticString( memberpress.adapter ) ||
-				'memberpress_scale_1_12_17',
+				'memberpress_scale',
 			configured: memberpress.configured === true,
 			eligible: memberpress.eligible === true,
 			applied: memberpress.applied === true,
@@ -102,7 +102,7 @@ function normalizeCompatibilityAdapters( value ) {
 		yoast: {
 			adapter:
 				diagnosticString( yoast.adapter ) ||
-				'yoast_seo_core_premium_28_2',
+				'yoast_seo_core_premium',
 			configured: yoast.configured === true,
 			eligible: yoast.eligible === true,
 			applied: yoast.applied === true,

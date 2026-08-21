@@ -9,8 +9,9 @@ defined( 'ABSPATH' ) || exit;
 
 define( 'WP_COLLAB_CF_VERSION', '0.5.4' );
 
-require_once __DIR__ . '/includes/compatibility/memberpress-1-12-17.php';
-require_once __DIR__ . '/includes/compatibility/yoast-seo-premium-28-2.php';
+require_once __DIR__ . '/includes/compatibility/version-policy.php';
+require_once __DIR__ . '/includes/compatibility/memberpress.php';
+require_once __DIR__ . '/includes/compatibility/yoast-seo.php';
 require_once __DIR__ . '/includes/compatibility/meta-box-policy.php';
 
 /**

@@ -165,15 +165,16 @@ add_filter(
 );
 ```
 
-Two configured IDs use version-locked compatibility adapters instead of the
+Two configured IDs use minimum-version compatibility adapters instead of the
 generic late registry removal:
 
-- `mepr_unauthorized_message` is removed only for MemberPress Scale 1.12.17
+- `mepr_unauthorized_message` is removed for MemberPress Scale 1.12.17 or newer
   when every active occurrence still uses the exact
   `MeprAppCtrl::unauthorized_meta_box` callback. A version or callback mismatch
   leaves the complete box present so Gutenberg keeps exclusive editing.
-- `wpseo_meta` is supported only for the exact Yoast SEO Core 28.2 + Premium
-  28.2 pair, optionally with Yoast SEO: News 13.3. The adapter uses Yoast's post-type owner filter before meta-box
+- `wpseo_meta` is supported for Yoast SEO Core 28.2 + Premium 28.2 or newer,
+  optionally with Yoast SEO: News 13.3 or newer. The adapter uses Yoast's
+  post-type owner filter before meta-box
   registration, rejects obvious active Yoast add-ons and protected Yoast block
   content (including uncertain synced-pattern graphs), and removes the exact
   characterized editor asset graph, including `wpseo-news-editor` when News is
@@ -181,7 +182,8 @@ generic late registry removal:
   breadcrumb, Premium dynamic-block, redirect, News sitemap/schema, frontend
   SEO/schema, indexable, and save integrations remain available.
 
-These adapters are fail-closed. Unsupported versions, callbacks, add-ons,
+These adapters are fail-closed below their minimum versions. Malformed or
+missing versions, callback mismatches, unsupported add-ons,
 asset dependencies, protected blocks, or uncertain synced content leave RTC
 blocked after Yoast consults its owner filter. A remaining real box also keeps
 Gutenberg exclusive; an absent box with an unobserved owner filter means Yoast

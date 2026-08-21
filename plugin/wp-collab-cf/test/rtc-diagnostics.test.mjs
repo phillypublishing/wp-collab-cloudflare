@@ -423,7 +423,7 @@ test( 'reports stable sanitized compatibility adapter state', () => {
 			...readyServerReport,
 			compatibilityAdapters: {
 				memberpress: {
-					adapter: 'memberpress_scale_1_12_17',
+					adapter: 'memberpress_scale',
 					configured: true,
 					eligible: true,
 					applied: true,
@@ -432,7 +432,7 @@ test( 'reports stable sanitized compatibility adapter state', () => {
 					proprietaryPath: '/srv/memberpress/app/controllers/MeprAppCtrl.php',
 				},
 				yoast: {
-					adapter: 'yoast_seo_core_premium_28_2',
+					adapter: 'yoast_seo_core_premium',
 					configured: true,
 					eligible: false,
 					applied: false,
@@ -464,7 +464,7 @@ test( 'reports stable sanitized compatibility adapter state', () => {
 	} );
 
 	assert.deepEqual( report.compatibilityAdapters.memberpress, {
-		adapter: 'memberpress_scale_1_12_17',
+		adapter: 'memberpress_scale',
 		configured: true,
 		eligible: true,
 		applied: true,
