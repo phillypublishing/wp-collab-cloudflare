@@ -67,6 +67,10 @@ npm run check
 npm run deploy:staging
 ```
 
+The top-level Wrangler configuration is for local development only and rejects
+deployment. Always deploy one of the named environments through the package
+scripts above.
+
 Promote the same verified commit with `npm run deploy:production` only after
 the staging checks in [the production runbook](docs/production-runbook.md).
 Note the deployed URL (for example,

@@ -30,6 +30,11 @@ Durable Object bindings are repeated intentionally because Wrangler does not
 inherit either into named environments. Each environment gets its own Durable
 Object namespace and `COLLAB_AUTH_KEYS` secret.
 
+The top-level Wrangler configuration is local-only. Its custom build guard
+rejects unqualified deployment commands so `wp-collab-cloudflare` cannot be
+recreated accidentally; use `npm run deploy:staging` or
+`npm run deploy:production` for every remote deployment.
+
 The application limits are public Wrangler variables:
 
 | Variable | Default | Meaning |

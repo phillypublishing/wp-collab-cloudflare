@@ -4,6 +4,9 @@
   // Set via CLOUDFLARE_ACCOUNT_ID env var or `wrangler login`
   // "account_id": "",
   "main": "src/index.ts",
+  "build": {
+    "command": "node scripts/guard-default-deploy.mjs"
+  },
   "compatibility_date": "2025-04-01",
   "observability": {
     "enabled": true,
@@ -35,6 +38,7 @@
   ],
   "env": {
     "staging": {
+      "build": {},
       "workers_dev": true,
       "preview_urls": false,
       "analytics_engine_datasets": [
@@ -69,6 +73,7 @@
       }
     },
     "production": {
+      "build": {},
       "analytics_engine_datasets": [
         {
           "binding": "COLLAB_METRICS",
