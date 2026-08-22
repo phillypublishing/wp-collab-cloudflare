@@ -24,7 +24,6 @@ developer tools.
    private `wp-config.php`, host-managed environment configuration, or an
    untracked mu-plugin. The required constants are:
 
-   - `WP_ALLOW_COLLABORATION`
    - `WP_COLLAB_CF_WS_URL`
    - `WP_COLLAB_CF_SITE_ID`
    - `WP_COLLAB_CF_AUTH_SECRET`
@@ -34,13 +33,9 @@ developer tools.
 
    The site's canonical `admin_url()` origin must match the HTTPS origin seen
    in the browser. A proxy or domain mismatch is rejected deliberately.
-5. Confirm real-time collaboration is enabled for the site. If the site was
-   already using WordPress's polling collaboration transport, this setting is
-   already satisfied. With WP-CLI, the explicit equivalent is:
-
-   ```bash
-   wp option update wp_collaboration_enabled 1
-   ```
+5. Under **Settings > Gutenberg > Experiments**, enable **Real-Time
+   Collaboration**. In Gutenberg 23.8 or newer, this experiment replaces the
+   former `WP_ALLOW_COLLABORATION` and `wp_collaboration_enabled` settings.
 
 ## Browser acceptance check
 

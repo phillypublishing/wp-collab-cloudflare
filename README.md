@@ -1,10 +1,10 @@
 # WP Collab Cloudflare
 
-Proof-of-concept that offloads WordPress 7.0's real-time collaboration (RTC) to a Cloudflare Workers relay, replacing the default HTTP polling transport with WebSockets over Durable Objects.
+Proof-of-concept that offloads Gutenberg's experimental real-time collaboration (RTC) to a Cloudflare Workers relay, replacing the default HTTP polling transport with WebSockets over Durable Objects.
 
 ## Why
 
-WordPress 7.0 introduces collaborative editing powered by Yjs. By default it syncs via HTTP polling (every 1-4 seconds). This works, but each poll holds a PHP worker for the duration of the request. On hosts with limited concurrency, no WebSocket support, or stateless containers, this becomes a bottleneck.
+Gutenberg's Real-Time Collaboration experiment uses Yjs and syncs via HTTP polling by default (every 1-4 seconds). This works, but each poll holds a PHP worker for the duration of the request. On hosts with limited concurrency, no WebSocket support, or stateless containers, this becomes a bottleneck.
 
 This project moves the sync relay to Cloudflare's edge:
 
@@ -26,7 +26,7 @@ Four pieces work together:
 |-----------|------|---------|
 | **Worker** | [`worker/`](worker/) | Cloudflare Worker + Durable Object running [y-partyserver](https://github.com/cloudflare/partykit/tree/main/packages/y-partyserver) as a Yjs sync relay |
 | **Plugin** | [`plugin/wp-collab-cf/`](plugin/wp-collab-cf/) | WordPress plugin that hooks into the `sync.providers` filter to swap HTTP polling for a WebSocket connection to the Worker |
-| **MU-Plugin** | [`mu-plugin/`](mu-plugin/) | Enables `WP_ALLOW_COLLABORATION` and sets the `WP_COLLAB_CF_WS_URL` constant that the plugin reads |
+| **MU-Plugin** | [`mu-plugin/`](mu-plugin/) | Supplies the authenticated Worker URL, site ID, and signing-key configuration that the plugin reads |
 | **Demo Plugin** | [`plugin/wp-collab-cf-demo/`](plugin/wp-collab-cf-demo/) | Optional. Magic link that creates temporary guest users restricted to a single demo post, useful for sharing a live demo |
 
 ## Setup
@@ -82,6 +82,11 @@ define( 'WP_COLLAB_CF_SITE_ID', 'YOUR_SITE_ID' );
 define( 'WP_COLLAB_CF_AUTH_SECRET', 'YOUR_SIGNING_SECRET' );
 define( 'WP_COLLAB_CF_AUTH_KEY_ID', '2026-08' ); // For named keys only.
 ```
+
+In Gutenberg 23.8 or newer, enable **Real-Time Collaboration** under
+**Settings > Gutenberg > Experiments**. The experiment is the source of truth;
+the former `WP_ALLOW_COLLABORATION` and `wp_collaboration_enabled` settings no
+longer enable RTC.
 
 ### 4. Install the Plugin
 
@@ -244,7 +249,8 @@ Or via option: `wp option update wp_collab_cf_demo_post_id 123`
 
 ## How It Works
 
-1. The **mu-plugin** defines `WP_ALLOW_COLLABORATION` (enabling RTC) and `WP_COLLAB_CF_WS_URL` (the relay endpoint).
+1. Gutenberg's **Real-Time Collaboration** experiment enables RTC, and the
+   **mu-plugin** supplies the authenticated Cloudflare relay configuration.
 
 2. The **plugin** uses the [`sync.providers`](https://developer.wordpress.org/reference/hooks/sync-providers/) filter to replace WordPress's default HTTP polling provider with a WebSocket provider. Before connecting, it requests a short-lived credential through Core `wp.apiFetch`, including its supported cookie/nonce refresh behavior. WordPress verifies `edit_post` for a post. Collection requests keep Gutenberg's native `objectId: null`, require the HTTP sync server's minimum `edit_posts` capability, and use `WP_Sync_Config` plus the `wp_collab_cf_collection_sync_permission` extension filter. The provider uses `y-partyserver` and reuses WordPress's bundled Yjs instance (via `wp.sync.Y`) to avoid duplicate library issues.
 

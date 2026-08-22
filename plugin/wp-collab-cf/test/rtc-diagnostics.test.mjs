@@ -95,7 +95,7 @@ test( 'reports the exact meta boxes that make Gutenberg disable RTC', () => {
 	const report = createRtcDiagnosticsReport( {
 		wp,
 		browser: {
-			_wpCollaborationEnabled: true,
+			__experimentalEnableRealTimeCollaboration: true,
 			_wpCollaborationDisabledPostTypes: [],
 		},
 		server: {
@@ -170,7 +170,7 @@ test( 'reports the server, editor, and sync gates without exposing configuration
 	const report = createRtcDiagnosticsReport( {
 		wp: createWp(),
 		browser: {
-			_wpCollaborationEnabled: false,
+			__experimentalEnableRealTimeCollaboration: false,
 			_wpCollaborationDisabledPostTypes: [ 'post' ],
 		},
 		server: {
@@ -209,7 +209,7 @@ test( 'stays quiet automatically when every RTC gate is ready', () => {
 			},
 		} ),
 		browser: {
-			_wpCollaborationEnabled: true,
+			__experimentalEnableRealTimeCollaboration: true,
 			_wpCollaborationDisabledPostTypes: [],
 		},
 		server: readyServerReport,
@@ -218,6 +218,49 @@ test( 'stays quiet automatically when every RTC gate is ready', () => {
 	assert.equal( report.status, 'ready' );
 	assert.deepEqual( report.blockers, [] );
 	assert.equal( shouldAutoLogRtcDiagnostics( report ), false );
+} );
+
+test( 'recognizes the Gutenberg 23.8 real-time collaboration experiment', () => {
+	const report = createRtcDiagnosticsReport( {
+		wp: createWp( {
+			syncConfig: {
+				supportsPersistence: true,
+				shouldSync: () => true,
+			},
+		} ),
+		browser: {
+			__experimentalEnableRealTimeCollaboration: true,
+			_wpCollaborationDisabledPostTypes: [],
+		},
+		server: readyServerReport,
+	} );
+
+	assert.equal( report.status, 'ready' );
+	assert.equal( report.gates.editorCollaborationEnabled, true );
+	assert.deepEqual( report.blockers, [] );
+} );
+
+test( 'ignores the retired collaboration experiment flag', () => {
+	const report = createRtcDiagnosticsReport( {
+		wp: createWp( {
+			syncConfig: {
+				supportsPersistence: true,
+				shouldSync: () => true,
+			},
+		} ),
+		browser: {
+			_wpCollaborationEnabled: true,
+			_wpCollaborationDisabledPostTypes: [],
+		},
+		server: readyServerReport,
+	} );
+
+	assert.equal( report.status, 'blocked' );
+	assert.equal( report.gates.editorCollaborationEnabled, false );
+	assert.deepEqual(
+		report.blockers.map( ( blocker ) => blocker.code ),
+		[ 'editor_collaboration_disabled' ]
+	);
 } );
 
 test( 'does not report false blockers before Gutenberg initializes the editor', () => {
@@ -274,7 +317,7 @@ test( 'finishes initialization when the singular loader has no meta boxes', () =
 			},
 		} ),
 		browser: {
-			_wpCollaborationEnabled: true,
+			__experimentalEnableRealTimeCollaboration: true,
 			_wpCollaborationDisabledPostTypes: [],
 			_wpMetaBoxUrl: 'https://example.test/wp-admin/post.php',
 		},
@@ -299,7 +342,7 @@ test( 'ignores server meta boxes that Gutenberg removes from the editor store', 
 			},
 		} ),
 		browser: {
-			_wpCollaborationEnabled: true,
+			__experimentalEnableRealTimeCollaboration: true,
 			_wpCollaborationDisabledPostTypes: [],
 		},
 		server: {
@@ -331,7 +374,7 @@ test( 'uses the Gutenberg store as the compatibility authority', () => {
 			},
 		} ),
 		browser: {
-			_wpCollaborationEnabled: true,
+			__experimentalEnableRealTimeCollaboration: true,
 			_wpCollaborationDisabledPostTypes: [],
 			_wpMetaBoxUrl: 'https://example.test/wp-admin/post.php',
 		},
@@ -362,7 +405,7 @@ test( 'reports site-wide suppression while keeping the browser store authoritati
 			},
 		} ),
 		browser: {
-			_wpCollaborationEnabled: true,
+			__experimentalEnableRealTimeCollaboration: true,
 			_wpCollaborationDisabledPostTypes: [],
 		},
 		server: {
@@ -418,7 +461,7 @@ test( 'reports stable sanitized compatibility adapter state', () => {
 				shouldSync: () => true,
 			},
 		} ),
-		browser: { _wpCollaborationEnabled: true },
+		browser: { __experimentalEnableRealTimeCollaboration: true },
 		server: {
 			...readyServerReport,
 			compatibilityAdapters: {
@@ -531,7 +574,7 @@ test( 'fails closed when Gutenberg meta-box evaluation throws', () => {
 			},
 		} ),
 		browser: {
-			_wpCollaborationEnabled: true,
+			__experimentalEnableRealTimeCollaboration: true,
 			_wpCollaborationDisabledPostTypes: [],
 		},
 		server: readyServerReport,
@@ -557,7 +600,7 @@ test( 'fails closed when Gutenberg shouldSync evaluation throws', () => {
 			},
 		} ),
 		browser: {
-			_wpCollaborationEnabled: true,
+			__experimentalEnableRealTimeCollaboration: true,
 			_wpCollaborationDisabledPostTypes: [],
 		},
 		server: readyServerReport,
