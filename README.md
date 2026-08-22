@@ -71,8 +71,15 @@ The top-level Wrangler configuration is for local development only and rejects
 deployment. Always deploy one of the named environments through the package
 scripts above.
 
-Promote the same verified commit with `npm run deploy:production` only after
-the staging checks in [the production runbook](docs/production-runbook.md).
+Bootstrap production once with `npm run deploy:production`, then configure its
+independent `COLLAB_AUTH_KEYS` secret. Future production releases use the
+manual **Production Worker deploy** GitHub Actions workflow with the full
+40-character commit SHA already merged to `main`. Production never deploys on
+an ordinary `main` push or from a mutable `stable`/`production` branch. The
+workflow revalidates the exact revision, requires the existing Cloudflare
+keyring, deploys only the named production environment, and checks its stable
+health URL. See [the production runbook](docs/production-runbook.md).
+
 Note the deployed URL (for example,
 `wss://wp-collab-cloudflare-staging.your-subdomain.workers.dev`).
 

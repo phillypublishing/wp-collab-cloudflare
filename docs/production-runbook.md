@@ -35,6 +35,12 @@ rejects unqualified deployment commands so `wp-collab-cloudflare` cannot be
 recreated accidentally; use `npm run deploy:staging` or
 `npm run deploy:production` for every remote deployment.
 
+The named environments publish stable `workers.dev` routes and disable
+per-version preview aliases. Production source promotion is an explicit
+GitHub Actions deployment from a full commit SHA already merged to `main`.
+Neither an ordinary `main` push nor a mutable release branch deploys
+production.
+
 The application limits are public Wrangler variables:
 
 | Variable | Default | Meaning |
@@ -109,8 +115,44 @@ server-shell access. Use the CI-built plugin ZIP for the exact commit containing
 the approved plugin source rather than copying a mutable source checkout. Record
 that plugin commit separately when the deployed Worker uses a later commit.
 
-Production uses the same sequence with `--env production`. Deployment is a
-manual, separately authorized action; CI only builds a dry-run bundle.
+## First production bootstrap
+
+Cloudflare needs the named Worker before it can attach the first secret. Do
+this once from the exact reviewed `main` commit while no WordPress site points
+at the production endpoint:
+
+1. Run `npm ci`, `npm run check`, and `npm run deploy:production`. The Worker
+   fails closed until its keyring exists.
+2. Generate a new production-only site ID and signing secret. Store a named
+   keyring with `npx wrangler secret put COLLAB_AUTH_KEYS --env production`.
+   `wrangler secret put` creates and immediately deploys a new Worker version.
+3. Confirm the production HTTPS root returns
+   `{"status":"ok","service":"wp-collab-cloudflare"}` before configuring
+   WordPress.
+4. Create the repository's `production` GitHub environment. Restrict it to
+   workflow runs from `main`, configure an explicit reviewer when the GitHub
+   plan permits one, add `CLOUDFLARE_API_TOKEN` as an environment secret, and
+   set these environment variables:
+
+   - `CLOUDFLARE_ACCOUNT_ID`
+   - `WORKER_HEALTH_URL` (the HTTPS root without a trailing slash)
+
+Keep `COLLAB_AUTH_KEYS` out of GitHub. It belongs only in Cloudflare and in the
+private WordPress configuration that holds the matching site credential.
+
+## Production promotion workflow
+
+Run **Production Worker deploy** manually and provide the full lowercase
+40-character commit SHA to promote. The workflow fails closed unless that
+revision is reachable from `main`, the complete Worker check passes, the
+production keyring already exists, the named production deployment succeeds,
+and its health response is valid. The workflow input and job summary record the
+promoted revision; GitHub's production environment serializes concurrent
+promotion attempts.
+
+To roll back Worker code, dispatch the same workflow with the prior known-good
+commit SHA. Secret rotation remains a separate operation and does not occur as
+a side effect of source promotion.
 
 ## Zero-downtime signing-key rotation
 

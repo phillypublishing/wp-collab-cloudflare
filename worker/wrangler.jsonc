@@ -74,6 +74,8 @@
     },
     "production": {
       "build": {},
+      "workers_dev": true,
+      "preview_urls": false,
       "analytics_engine_datasets": [
         {
           "binding": "COLLAB_METRICS",
