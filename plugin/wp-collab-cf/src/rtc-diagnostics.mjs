@@ -279,6 +279,8 @@ export function createRtcDiagnosticsReport( {
 	const postTypeDisabled =
 		server.postTypeDisabled === true ||
 		disabledPostTypes.includes( postType );
+	const editorCollaborationEnabled =
+		browser.__experimentalEnableRealTimeCollaboration === true;
 	const blockers = [];
 
 	if ( initialized && server.collaborationAllowed === false ) {
@@ -290,7 +292,7 @@ export function createRtcDiagnosticsReport( {
 	if ( initialized && server.cloudflareConfigured === false ) {
 		blockers.push( blocker( 'cloudflare_not_configured' ) );
 	}
-	if ( initialized && browser._wpCollaborationEnabled !== true ) {
+	if ( initialized && ! editorCollaborationEnabled ) {
 		blockers.push( blocker( 'editor_collaboration_disabled' ) );
 	}
 	if ( initialized && postTypeDisabled ) {
@@ -350,8 +352,7 @@ export function createRtcDiagnosticsReport( {
 			collaborationAllowed: server.collaborationAllowed ?? null,
 			collaborationEnabled: server.collaborationEnabled ?? null,
 			cloudflareConfigured: server.cloudflareConfigured ?? null,
-			editorCollaborationEnabled:
-				browser._wpCollaborationEnabled === true,
+			editorCollaborationEnabled,
 			postTypeDisabled,
 			syncConfigPresent: Boolean( syncConfig ),
 			supportsPersistence: Boolean( syncConfig?.supportsPersistence ),
