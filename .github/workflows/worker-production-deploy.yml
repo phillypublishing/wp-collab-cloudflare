@@ -1,0 +1,99 @@
+name: Production Worker deploy
+
+# Production is promoted deliberately by immutable commit SHA. A mutable
+# branch push is never a production release signal.
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Full 40-character commit SHA from main to promote'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-worker-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: ${{ vars.WORKER_HEALTH_URL }}
+    steps:
+      - name: Checkout promoted revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable main revision
+        env:
+          PROMOTION_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${PROMOTION_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'commit_sha must be a full lowercase 40-character Git SHA.' >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "${PROMOTION_SHA}"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${PROMOTION_SHA}" "$(git rev-parse FETCH_HEAD)"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install Worker dependencies
+        working-directory: worker
+        run: npm ci
+
+      - name: Validate Worker
+        working-directory: worker
+        run: npm run check
+
+      - name: Require production auth keyring
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          secret_list="$(npx wrangler secret list --env production)"
+          jq -e 'any(.[]; .name == "COLLAB_AUTH_KEYS")' <<< "${secret_list}" >/dev/null
+
+      - name: Deploy production Worker
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy:production
+
+      - name: Verify production health
+        env:
+          WORKER_HEALTH_URL: ${{ vars.WORKER_HEALTH_URL }}
+        run: |
+          set -euo pipefail
+          test -n "${WORKER_HEALTH_URL}"
+          response="$(curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 2 "${WORKER_HEALTH_URL}/")"
+          jq -e '.status == "ok" and .service == "wp-collab-cloudflare"' <<< "${response}" >/dev/null
+
+      - name: Record deployment receipt
+        env:
+          PROMOTION_SHA: ${{ inputs.commit_sha }}
+          WORKER_HEALTH_URL: ${{ vars.WORKER_HEALTH_URL }}
+        run: |
+          {
+            echo '### Production Worker deployment'
+            printf -- '- Commit: `%s`\n' "${PROMOTION_SHA}"
+            printf -- '- Environment: `production`\n'
+            printf -- '- Health URL: %s\n' "${WORKER_HEALTH_URL}"
+          } >> "${GITHUB_STEP_SUMMARY}"

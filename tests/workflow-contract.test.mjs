@@ -122,6 +122,7 @@ assert.throws( () => parseWorkflowYaml( 'name: [unsupported]\n' ), /Unsupported 
 const repoRoot = path.resolve( path.dirname( fileURLToPath( import.meta.url ) ), '..' );
 const workflowPath = path.join( repoRoot, '.github/workflows/wp-plugin-release.yml' );
 const ciPath = path.join( repoRoot, '.github/workflows/ci.yml' );
+const productionWorkflowPath = path.join( repoRoot, '.github/workflows/worker-production-deploy.yml' );
 const workflowSource = fs.readFileSync( workflowPath, 'utf8' );
 const workflow = parseWorkflowYaml( workflowSource );
 
@@ -219,6 +220,119 @@ assert.ok( ! workflowSource.includes( 'git ls-remote' ), 'Workflow must not use 
 assert.ok( ! workflowSource.includes( 'gh release create' ), 'Workflow must not use one-shot release creation.' );
 assert.ok( ! workflowSource.includes( 'sha256sum --check' ), 'Artifact verification must not be duplicated inline.' );
 assert.ok(
-	fs.readFileSync( ciPath, 'utf8' ).includes( '- run: ./tests/plugin-release-workflow.test.sh' ),
+	fs.readFileSync( ciPath, 'utf8' ).includes( '- run: ./tests/workflow-contract.test.sh' ),
 	'CI must run the release workflow contract.'
 );
+
+const productionWorkflowSource = fs.readFileSync( productionWorkflowPath, 'utf8' );
+const productionWorkflow = parseWorkflowYaml( productionWorkflowSource );
+
+assert.deepEqual(
+	Object.keys( productionWorkflow.on ),
+	['workflow_dispatch'],
+	'Production deployment must be an explicit manual promotion.'
+);
+assert.deepEqual(
+	productionWorkflow.on.workflow_dispatch.inputs,
+	{
+		commit_sha: {
+			description: 'Full 40-character commit SHA from main to promote',
+			required: true,
+			type: 'string',
+		},
+	},
+	'Production promotion must require one immutable commit SHA.'
+);
+assert.deepEqual(
+	productionWorkflow.permissions,
+	{ contents: 'read' },
+	'Production deployment must keep repository permissions read-only.'
+);
+assert.deepEqual(
+	productionWorkflow.concurrency,
+	{
+		group: 'production-worker-deploy',
+		'cancel-in-progress': false,
+	},
+	'Production deployments must serialize without cancelling an active deploy.'
+);
+
+const productionJob = productionWorkflow.jobs.deploy;
+assert.equal( productionJob[ 'runs-on' ], 'ubuntu-latest' );
+assert.equal( productionJob[ 'timeout-minutes' ], 20 );
+assert.deepEqual(
+	productionJob.environment,
+	{
+		name: 'production',
+		url: '${{ vars.WORKER_HEALTH_URL }}',
+	},
+	'Production deploys must use the protected GitHub environment and its stable URL.'
+);
+assert.ok(
+	! Object.hasOwn( productionJob, 'env' ),
+	'Cloudflare credentials must be scoped only to steps that contact Cloudflare.'
+);
+
+const productionSteps = new Map( productionJob.steps.map( ( step ) => [step.name, step] ) );
+assert.deepEqual(
+	productionJob.steps.map( ( step ) => step.name ),
+	[
+		'Checkout promoted revision',
+		'Verify immutable main revision',
+		'Set up Node.js',
+		'Install Worker dependencies',
+		'Validate Worker',
+		'Require production auth keyring',
+		'Deploy production Worker',
+		'Verify production health',
+		'Record deployment receipt',
+	],
+	'Every validation gate must run before the production deploy, followed by health verification.'
+);
+const productionCheckout = productionSteps.get( 'Checkout promoted revision' );
+const productionVerify = productionSteps.get( 'Verify immutable main revision' );
+const productionInstall = productionSteps.get( 'Install Worker dependencies' );
+const productionCheck = productionSteps.get( 'Validate Worker' );
+const productionSecret = productionSteps.get( 'Require production auth keyring' );
+const productionDeploy = productionSteps.get( 'Deploy production Worker' );
+const productionHealth = productionSteps.get( 'Verify production health' );
+const productionReceipt = productionSteps.get( 'Record deployment receipt' );
+
+assert.match( productionCheckout.uses, /@[0-9a-f]{40}$/, 'Production checkout must be SHA-pinned.' );
+assert.equal( productionCheckout.with.ref, '${{ inputs.commit_sha }}' );
+assert.equal( productionCheckout.with[ 'fetch-depth' ], 0 );
+assert.equal( productionCheckout.with[ 'persist-credentials' ], false );
+assert.match( productionVerify.run, /\^\[0-9a-f\]\{40\}\$/u );
+assert.match( productionVerify.run, /git merge-base --is-ancestor/u );
+assert.deepEqual( productionVerify.env, { PROMOTION_SHA: '${{ inputs.commit_sha }}' } );
+assert.match( productionVerify.run, /git rev-parse FETCH_HEAD/u );
+assert.equal( productionInstall.run, 'npm ci' );
+assert.equal( productionInstall[ 'working-directory' ], 'worker' );
+assert.equal( productionCheck.run, 'npm run check' );
+assert.equal( productionCheck[ 'working-directory' ], 'worker' );
+assert.match( productionSecret.run, /wrangler secret list --env production/u );
+assert.match( productionSecret.run, /COLLAB_AUTH_KEYS/u );
+assert.equal( productionDeploy.run, 'npm run deploy:production' );
+assert.equal( productionDeploy[ 'working-directory' ], 'worker' );
+assert.deepEqual( productionSecret.env, productionDeploy.env );
+assert.deepEqual(
+	productionDeploy.env,
+	{
+		CLOUDFLARE_API_TOKEN: '${{ secrets.CLOUDFLARE_API_TOKEN }}',
+		CLOUDFLARE_ACCOUNT_ID: '${{ vars.CLOUDFLARE_ACCOUNT_ID }}',
+	},
+	'Only Cloudflare-facing steps may receive the deploy credential.'
+);
+assert.deepEqual(
+	productionHealth.env,
+	{ WORKER_HEALTH_URL: '${{ vars.WORKER_HEALTH_URL }}' },
+	'The health check must not receive Cloudflare credentials.'
+);
+assert.match( productionHealth.run, /curl --fail/u );
+assert.match( productionHealth.run, /status == "ok"/u );
+assert.match( productionReceipt.run, /GITHUB_STEP_SUMMARY/u );
+for ( const action of productionJob.steps.flatMap( ( step ) => step.uses ? [step.uses] : [] ) ) {
+	assert.match( action, /@[0-9a-f]{40}$/, `Production action is not SHA-pinned: ${ action }` );
+}
+assert.ok( ! productionWorkflowSource.includes( 'COLLAB_AUTH_KEYS: ${{ secrets.' ) );
+assert.ok( ! productionWorkflowSource.includes( 'branches:\n      - main' ) );

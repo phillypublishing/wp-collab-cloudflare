@@ -120,9 +120,11 @@ test("every deployment separates four-hour sessions from short-lived grants", as
   );
 });
 
-test("staging publishes one stable workers.dev route without preview aliases", async () => {
+test("named deployments publish stable workers.dev routes without preview aliases", async () => {
   const config = await wranglerConfig;
 
   assert.equal(config.env.staging.workers_dev, true);
   assert.equal(config.env.staging.preview_urls, false);
+  assert.equal(config.env.production.workers_dev, true);
+  assert.equal(config.env.production.preview_urls, false);
 });
