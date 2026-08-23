@@ -485,6 +485,8 @@ test( 'reports stable sanitized compatibility adapter state', () => {
 						core: '28.2',
 						premium: '28.2',
 						news: '13.3',
+						video: '15.2',
+						local: '15.8',
 					},
 					configured: true,
 					eligible: false,
@@ -493,6 +495,8 @@ test( 'reports stable sanitized compatibility adapter state', () => {
 					coreVersion: '28.2',
 					premiumVersion: '28.2',
 					newsVersion: '13.3',
+					videoVersion: '15.2',
+					localVersion: '15.8',
 					ownerFilterObserved: true,
 					ownerFilterSuppressed: false,
 					emojiPickerDisabled: false,
@@ -540,9 +544,13 @@ test( 'reports stable sanitized compatibility adapter state', () => {
 		core: '28.2',
 		premium: '28.2',
 		news: '13.3',
+		video: '15.2',
+		local: '15.8',
 	} );
 	assert.equal( report.compatibilityAdapters.yoast.reason, 'protected_content' );
 	assert.equal( report.compatibilityAdapters.yoast.newsVersion, '13.3' );
+	assert.equal( report.compatibilityAdapters.yoast.videoVersion, '15.2' );
+	assert.equal( report.compatibilityAdapters.yoast.localVersion, '15.8' );
 	assert.deepEqual( report.compatibilityAdapters.yoast.protectedContent, {
 		state: 'protected',
 		reason: 'protected_block',

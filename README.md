@@ -189,13 +189,14 @@ generic late registry removal:
   `MeprAppCtrl::unauthorized_meta_box` callback. A version or callback mismatch
   leaves the complete box present so Gutenberg keeps exclusive editing.
 - `wpseo_meta` is supported for Yoast SEO Core 28.2 + Premium 28.2 or newer,
-  optionally with Yoast SEO: News 13.3 or newer. The adapter uses Yoast's
-  post-type owner filter before meta-box
-  registration, rejects obvious active Yoast add-ons and protected Yoast block
-  content (including uncertain synced-pattern graphs), and removes the exact
-  characterized editor asset graph, including `wpseo-news-editor` when News is
-  active. It never falls back to generic late removal. Core FAQ, How-to,
-  breadcrumb, Premium dynamic-block, redirect, News sitemap/schema, frontend
+  optionally with Yoast SEO: News 13.3, Video 15.2, and Local 15.8 or newer.
+  The adapter uses Yoast's post-type owner filter before meta-box registration,
+  rejects other obvious active Yoast add-ons and protected Yoast block content
+  (including uncertain synced-pattern graphs), and removes the exact
+  characterized editor asset graph. This includes `wpseo-news-editor` and the
+  Video metabox bundle when those add-ons are active. It never falls back to
+  generic late removal. Core FAQ, How-to, breadcrumb, Premium dynamic-block,
+  redirect, News sitemap/schema, Video sitemap/schema, Local blocks, frontend
   SEO/schema, indexable, and save integrations remain available.
 
 These adapters are fail-closed below their minimum versions. Malformed or
@@ -207,8 +208,10 @@ is inactive on that screen and does not add a synthetic blocker. Yoast Premium
 prominent-word relationships may remain stale after a content-only
 collaborative edit, and News stock-ticker/exclusion values remain frozen while
 its editor UI is suppressed. Validate those known limitations before production
-rollout. Disabling the site-wide option and reloading restores the normal vendor
-UI.
+rollout. Video metabox controls are unavailable while its editor UI is
+suppressed; content-derived Video SEO metadata may still be recomputed on save.
+Local's independent block-editor blocks remain available. Disabling the
+site-wide option and reloading restores the normal vendor UI.
 
 The policy defaults to off. A user with `manage_options` can enable it from
 **Settings → Real-time Collaboration**. Enabling it is site-wide for the current
@@ -228,7 +231,9 @@ sanitized MemberPress and Yoast adapter eligibility, application, version
 policy, supported minimums, owner-filter, protected-content, add-on, opaque
 dependency-count, and asset-pruning states. The `adapter` values remain stable
 diagnostics/v1 compatibility aliases; new consumers should use the generic
-`policyId` together with `versionPolicy` and `minimumVersions`.
+`policyId` together with `versionPolicy` and `minimumVersions`. Characterized
+Yoast add-ons also report their sanitized active versions in `newsVersion`,
+`videoVersion`, and `localVersion`.
 It contains no post content, absolute paths, or proprietary plugin basenames.
 
 ### 5. Test

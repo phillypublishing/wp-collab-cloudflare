@@ -1,6 +1,6 @@
 <?php
 /**
- * Yoast SEO Core + Premium compatibility policy.
+ * Yoast SEO editor compatibility policy.
  *
  * @package WP_Collab_Cloudflare
  */
@@ -10,6 +10,8 @@ defined( 'ABSPATH' ) || exit;
 const WP_COLLAB_CF_YOAST_CORE_MINIMUM_VERSION    = '28.2';
 const WP_COLLAB_CF_YOAST_PREMIUM_MINIMUM_VERSION = '28.2';
 const WP_COLLAB_CF_YOAST_NEWS_MINIMUM_VERSION    = '13.3';
+const WP_COLLAB_CF_YOAST_VIDEO_MINIMUM_VERSION   = '15.2';
+const WP_COLLAB_CF_YOAST_LOCAL_MINIMUM_VERSION   = '15.8';
 
 /**
  * Return the exact editor script entrypoints denied by this adapter.
@@ -32,6 +34,7 @@ function wp_collab_cf_yoast_denied_script_handles() {
 		'wp-seo-premium-ai-optimize',
 		'wp-seo-premium-ai-blocks',
 		'wpseo-news-editor',
+		'wp-seo-video-seo',
 	);
 }
 
@@ -86,6 +89,8 @@ function wp_collab_cf_yoast_default_diagnostics( $configured = false ) {
 			'core'    => WP_COLLAB_CF_YOAST_CORE_MINIMUM_VERSION,
 			'premium' => WP_COLLAB_CF_YOAST_PREMIUM_MINIMUM_VERSION,
 			'news'    => WP_COLLAB_CF_YOAST_NEWS_MINIMUM_VERSION,
+			'video'   => WP_COLLAB_CF_YOAST_VIDEO_MINIMUM_VERSION,
+			'local'   => WP_COLLAB_CF_YOAST_LOCAL_MINIMUM_VERSION,
 		),
 		'configured'                 => (bool) $configured,
 		'eligible'                   => false,
@@ -94,6 +99,8 @@ function wp_collab_cf_yoast_default_diagnostics( $configured = false ) {
 		'coreVersion'                => defined( 'WPSEO_VERSION' ) && is_string( WPSEO_VERSION ) ? WPSEO_VERSION : null,
 		'premiumVersion'             => defined( 'WPSEO_PREMIUM_VERSION' ) && is_string( WPSEO_PREMIUM_VERSION ) ? WPSEO_PREMIUM_VERSION : null,
 		'newsVersion'                => null,
+		'videoVersion'               => null,
+		'localVersion'               => null,
 		'ownerFilterObserved'        => false,
 		'ownerFilterSuppressed'      => false,
 		'emojiPickerDisabled'        => false,
@@ -168,40 +175,91 @@ function wp_collab_cf_yoast_news_version_supported( $news_version ) {
 }
 
 /**
- * Identify the Yoast SEO: News main plugin file without depending on its folder.
+ * Identify a supported Yoast add-on main plugin file without depending on its folder.
+ *
+ * @param mixed  $plugin_basename Active plugin basename.
+ * @param string $main_file       Supported main filename.
+ * @return bool Whether this is the requested main file.
+ */
+function wp_collab_cf_yoast_is_addon_basename( $plugin_basename, $main_file ) {
+	if ( ! is_string( $plugin_basename ) ) {
+		return false;
+	}
+	$normalized = strtolower( str_replace( '\\', '/', $plugin_basename ) );
+	return $main_file === basename( $normalized );
+}
+
+/**
+ * Return the characterized Yoast add-on policies.
+ *
+ * @return array Add-on policies keyed by stable internal identifier.
+ */
+function wp_collab_cf_yoast_supported_addon_policies() {
+	return array(
+		'news'  => array(
+			'diagnosticKey'  => 'newsVersion',
+			'versionConstant' => 'WPSEO_NEWS_VERSION',
+			'minimumVersion'  => WP_COLLAB_CF_YOAST_NEWS_MINIMUM_VERSION,
+			'mainFile'        => 'wpseo-news.php',
+		),
+		'video' => array(
+			'diagnosticKey'  => 'videoVersion',
+			'versionConstant' => 'WPSEO_VIDEO_VERSION',
+			'minimumVersion'  => WP_COLLAB_CF_YOAST_VIDEO_MINIMUM_VERSION,
+			'mainFile'        => 'video-seo.php',
+		),
+		'local' => array(
+			'diagnosticKey'  => 'localVersion',
+			'versionConstant' => 'WPSEO_LOCAL_VERSION',
+			'minimumVersion'  => WP_COLLAB_CF_YOAST_LOCAL_MINIMUM_VERSION,
+			'mainFile'        => 'local-seo.php',
+		),
+	);
+}
+
+/**
+ * Identify the Yoast SEO: News main plugin file.
  *
  * @param mixed $plugin_basename Active plugin basename.
  * @return bool Whether this is the News main file.
  */
 function wp_collab_cf_yoast_is_news_addon_basename( $plugin_basename ) {
-	if ( ! is_string( $plugin_basename ) ) {
-		return false;
-	}
-	$normalized = strtolower( str_replace( '\\', '/', $plugin_basename ) );
-	return 'wpseo-news.php' === basename( $normalized );
+	$policies = wp_collab_cf_yoast_supported_addon_policies();
+	return wp_collab_cf_yoast_is_addon_basename( $plugin_basename, $policies['news']['mainFile'] );
 }
 
 /**
- * Find obvious active Yoast add-ons while keeping plugin basenames private.
+ * Classify characterized and unsupported add-ons in one active-plugin pass.
  *
  * @param array $active_plugins Active plugin basenames.
- * @return array One opaque marker per unsupported add-on.
+ * @return array Opaque unsupported markers and basename counts by policy.
  */
-function wp_collab_cf_yoast_find_unsupported_addons( $active_plugins ) {
-	$allowed = array(
-		'wordpress-seo/wp-seo.php',
-		'wordpress-seo-premium/wp-seo-premium.php',
+function wp_collab_cf_yoast_classify_addons( $active_plugins ) {
+	$allowed = array_fill_keys(
+		array(
+			'wordpress-seo/wp-seo.php',
+			'wordpress-seo-premium/wp-seo-premium.php',
+		),
+		true
 	);
-	$unsupported = array();
+	$policies         = wp_collab_cf_yoast_supported_addon_policies();
+	$addon_by_file    = array();
+	$basename_counts  = array_fill_keys( array_keys( $policies ), 0 );
+	$unsupported      = array();
+	foreach ( $policies as $addon_id => $policy ) {
+		$addon_by_file[ $policy['mainFile'] ] = $addon_id;
+	}
 
 	foreach ( (array) $active_plugins as $plugin_basename ) {
-		if ( ! is_string( $plugin_basename ) || in_array( $plugin_basename, $allowed, true ) ) {
-			continue;
-		}
-		if ( wp_collab_cf_yoast_is_news_addon_basename( $plugin_basename ) ) {
+		if ( ! is_string( $plugin_basename ) || isset( $allowed[ $plugin_basename ] ) ) {
 			continue;
 		}
 		$normalized = strtolower( str_replace( '\\', '/', $plugin_basename ) );
+		$main_file  = basename( $normalized );
+		if ( isset( $addon_by_file[ $main_file ] ) ) {
+			++$basename_counts[ $addon_by_file[ $main_file ] ];
+			continue;
+		}
 		if (
 			false !== strpos( $normalized, 'yoast' ) ||
 			false !== strpos( $normalized, 'wordpress-seo' ) ||
@@ -211,7 +269,51 @@ function wp_collab_cf_yoast_find_unsupported_addons( $active_plugins ) {
 		}
 	}
 
-	return $unsupported;
+	return array(
+		'unsupported'     => $unsupported,
+		'basenameCounts'  => $basename_counts,
+	);
+}
+
+/**
+ * Find obvious active Yoast add-ons while keeping plugin basenames private.
+ *
+ * @param array $active_plugins Active plugin basenames.
+ * @return array One opaque marker per unsupported add-on.
+ */
+function wp_collab_cf_yoast_find_unsupported_addons( $active_plugins ) {
+	$classification = wp_collab_cf_yoast_classify_addons( $active_plugins );
+	return $classification['unsupported'];
+}
+
+/**
+ * Evaluate one characterized Yoast add-on without exposing its basename.
+ *
+ * @param string $version_constant Add-on version constant.
+ * @param string $minimum_version  Supported minimum version.
+ * @param int    $basename_count   Active main-file occurrences.
+ * @return array Sanitized version and opaque unsupported count.
+ */
+function wp_collab_cf_yoast_evaluate_supported_addon( $version_constant, $minimum_version, $basename_count ) {
+	if ( ! defined( $version_constant ) && 0 === $basename_count ) {
+		return array(
+			'version'          => null,
+			'unsupportedCount' => 0,
+		);
+	}
+
+	$version = defined( $version_constant ) && is_string( constant( $version_constant ) )
+		? constant( $version_constant )
+		: null;
+	$unsupported_count = wp_collab_cf_version_meets_minimum( $version, $minimum_version ) ? 0 : 1;
+	if ( $basename_count > 1 ) {
+		++$unsupported_count;
+	}
+
+	return array(
+		'version'          => $version,
+		'unsupportedCount' => $unsupported_count,
+	);
 }
 
 /**
@@ -524,24 +626,18 @@ function wp_collab_cf_yoast_evaluate_stable_request() {
 		return $diagnostics;
 	}
 
-	$active_plugins      = wp_collab_cf_yoast_active_plugin_basenames();
-	$unsupported_addons  = wp_collab_cf_yoast_find_unsupported_addons( $active_plugins );
-	$news_active         = defined( 'WPSEO_NEWS_VERSION' );
-	$news_basename_count = 0;
-	foreach ( $active_plugins as $plugin_basename ) {
-		if ( wp_collab_cf_yoast_is_news_addon_basename( $plugin_basename ) ) {
-			$news_active = true;
-			++$news_basename_count;
-		}
-	}
-	if ( $news_active ) {
-		$diagnostics['newsVersion'] = defined( 'WPSEO_NEWS_VERSION' ) && is_string( WPSEO_NEWS_VERSION )
-			? WPSEO_NEWS_VERSION
-			: null;
-		if ( ! wp_collab_cf_yoast_news_version_supported( $diagnostics['newsVersion'] ) ) {
-			$unsupported_addons[] = 'unsupported';
-		}
-		if ( $news_basename_count > 1 ) {
+	$active_plugins       = wp_collab_cf_yoast_active_plugin_basenames();
+	$addon_classification = wp_collab_cf_yoast_classify_addons( $active_plugins );
+	$unsupported_addons   = $addon_classification['unsupported'];
+	$addon_policies       = wp_collab_cf_yoast_supported_addon_policies();
+	foreach ( $addon_policies as $addon_id => $addon_policy ) {
+		$addon = wp_collab_cf_yoast_evaluate_supported_addon(
+			$addon_policy['versionConstant'],
+			$addon_policy['minimumVersion'],
+			$addon_classification['basenameCounts'][ $addon_id ]
+		);
+		$diagnostics[ $addon_policy['diagnosticKey'] ] = $addon['version'];
+		for ( $index = 0; $index < $addon['unsupportedCount']; ++$index ) {
 			$unsupported_addons[] = 'unsupported';
 		}
 	}
