@@ -6,6 +6,8 @@ define( 'WPMU_PLUGIN_DIR', '/wordpress/wp-content/mu-plugins' );
 define( 'WPSEO_VERSION', '28.3' );
 define( 'WPSEO_PREMIUM_VERSION', '28.3' );
 define( 'WPSEO_NEWS_VERSION', '13.4' );
+define( 'WPSEO_VIDEO_VERSION', '15.2' );
+define( 'WPSEO_LOCAL_VERSION', '15.8' );
 define( 'MEPR_VERSION', '1.12.18' );
 
 error_reporting( E_ALL );
@@ -21,6 +23,8 @@ $compat_options = array(
 	'active_plugins' => array(
 		'wordpress-seo/wp-seo.php',
 		'wordpress-seo-premium/wp-seo-premium.php',
+		'wpseo-video/video-seo.php',
+		'wpseo-local/local-seo.php',
 	),
 );
 $compat_site_options = array();
@@ -368,6 +372,8 @@ compat_assert_same(
 		'core'    => '28.2',
 		'premium' => '28.2',
 		'news'    => '13.3',
+		'video'   => '15.2',
+		'local'   => '15.8',
 	),
 	$yoast_diagnostics['minimumVersions'],
 	'Yoast diagnostics should expose each supported minimum.'
@@ -384,6 +390,27 @@ compat_assert_same(
 	),
 	'The exact News main plugin file is handled by its own version policy.'
 );
+compat_assert_same(
+	array(),
+	wp_collab_cf_yoast_find_unsupported_addons(
+		array_merge(
+			array_slice( $compat_options['active_plugins'], 0, 2 ),
+			array( 'yoast-video-folder/video-seo.php', 'wordpress-seo-local-folder/local-seo.php' )
+		)
+	),
+	'The Video and Local main plugin files are handled by their own version policies regardless of folder name.'
+);
+$yoast_duplicate_addon_classification = wp_collab_cf_yoast_classify_addons(
+	array(
+		'yoast-video-one/video-seo.php',
+		'wordpress-seo-video-two/video-seo.php',
+		'yoast-local-one/local-seo.php',
+		'wordpress-seo-local-two/local-seo.php',
+	)
+);
+compat_assert_same( array(), $yoast_duplicate_addon_classification['unsupported'], 'Duplicate supported add-on basenames must not be classified as unsupported.' );
+compat_assert_same( 2, $yoast_duplicate_addon_classification['basenameCounts']['video'], 'Two distinct Video folders with video-seo.php must count as two Video add-ons.' );
+compat_assert_same( 2, $yoast_duplicate_addon_classification['basenameCounts']['local'], 'Two distinct Local folders with local-seo.php must count as two Local add-ons.' );
 compat_assert_true( wp_collab_cf_yoast_news_version_supported( '13.3' ), 'The minimum supported Yoast News version should be supported.' );
 compat_assert_true( wp_collab_cf_yoast_news_version_supported( '13.4' ), 'Newer Yoast News releases should remain supported.' );
 compat_assert_true( wp_collab_cf_yoast_news_version_supported( '14.0' ), 'Yoast News support should not impose an upper version bound.' );
@@ -513,6 +540,8 @@ foreach ( wp_collab_cf_yoast_denied_script_handles() as $handle ) {
 }
 $compat_scripts->add( 'wp-seo-premium-redirect-notifications-gutenberg' );
 $compat_scripts->add( 'wp-seo-premium-dynamic-blocks' );
+$compat_scripts->add( 'wp-seo-local-frontend' );
+$compat_scripts->add( 'wp-seo-local-blocks', array( 'wp-seo-local-frontend' ) );
 $compat_scripts->add( 'yoast-seo-how-to-block' );
 $compat_styles = new Compat_Dependencies();
 foreach ( wp_collab_cf_yoast_denied_style_handles() as $handle ) {
@@ -546,9 +575,10 @@ compat_assert_same( array(), array_values( array_intersect( wp_collab_cf_yoast_d
 compat_assert_same( array(), array_values( array_intersect( wp_collab_cf_yoast_denied_script_handles(), $compat_scripts->to_do ) ), 'Every denied script must leave the pending print list.' );
 compat_assert_same( array(), array_values( array_intersect( wp_collab_cf_yoast_denied_style_handles(), $compat_styles->queue ) ), 'Every paired editor-only style must leave the queue.' );
 compat_assert_same( array(), array_values( array_intersect( wp_collab_cf_yoast_denied_style_handles(), $compat_styles->to_do ) ), 'Every paired editor-only style must leave the pending print list.' );
-foreach ( array( 'wp-seo-premium-redirect-notifications-gutenberg', 'wp-seo-premium-dynamic-blocks', 'yoast-seo-how-to-block' ) as $preserved ) {
+foreach ( array( 'wp-seo-premium-redirect-notifications-gutenberg', 'wp-seo-premium-dynamic-blocks', 'wp-seo-local-frontend', 'wp-seo-local-blocks', 'yoast-seo-how-to-block' ) as $preserved ) {
 	compat_assert_true( in_array( $preserved, $compat_scripts->queue, true ), 'A preserved Yoast handle was removed: ' . $preserved );
 }
+compat_assert_true( in_array( 'wp-seo-video-seo', $yoast['removedScriptHandles'], true ), 'The Video metabox bundle must be pruned with its missing owner surface.' );
 compat_assert_true( in_array( 'preserved-editor-style', $compat_styles->queue, true ), 'An unrelated style was removed.' );
 compat_assert_same( 1, $compat_parse_blocks_calls, 'Stable Yoast content eligibility must be evaluated only once per request.' );
 compat_assert_same( array( 'wpseo_meta' ), wp_collab_cf_get_meta_box_suppression_diagnostics()['matchedIds'], 'Owner-suppressed Yoast must count as matched without generic removal.' );

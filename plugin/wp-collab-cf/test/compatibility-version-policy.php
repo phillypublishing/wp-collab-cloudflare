@@ -1,8 +1,17 @@
 <?php
 
 $mode = isset( $argv[1] ) ? $argv[1] : '';
-if ( ! in_array( $mode, array( 'absent', 'mismatch', 'news-mismatch', 'news-missing' ), true ) ) {
-	fwrite( STDERR, "Usage: php compatibility-version-policy.php absent|mismatch|news-mismatch|news-missing\n" );
+$addon_modes = array(
+	'news-mismatch',
+	'news-missing',
+	'video-mismatch',
+	'video-missing',
+	'local-mismatch',
+	'local-missing',
+);
+$valid_modes = array_merge( array( 'absent', 'mismatch' ), $addon_modes );
+if ( ! in_array( $mode, $valid_modes, true ) ) {
+	fwrite( STDERR, "Usage: php compatibility-version-policy.php absent|mismatch|news-mismatch|news-missing|video-mismatch|video-missing|local-mismatch|local-missing\n" );
 	exit( 2 );
 }
 
@@ -19,6 +28,24 @@ if ( 'mismatch' === $mode ) {
 	define( 'WPSEO_NEWS_VERSION', '13.2.99' );
 	define( 'MEPR_VERSION', '1.12.18' );
 } elseif ( 'news-missing' === $mode ) {
+	define( 'WPSEO_VERSION', '28.3' );
+	define( 'WPSEO_PREMIUM_VERSION', '28.3' );
+	define( 'MEPR_VERSION', '1.12.18' );
+} elseif ( 'video-mismatch' === $mode ) {
+	define( 'WPSEO_VERSION', '28.3' );
+	define( 'WPSEO_PREMIUM_VERSION', '28.3' );
+	define( 'WPSEO_VIDEO_VERSION', '15.1.99' );
+	define( 'MEPR_VERSION', '1.12.18' );
+} elseif ( 'video-missing' === $mode ) {
+	define( 'WPSEO_VERSION', '28.3' );
+	define( 'WPSEO_PREMIUM_VERSION', '28.3' );
+	define( 'MEPR_VERSION', '1.12.18' );
+} elseif ( 'local-mismatch' === $mode ) {
+	define( 'WPSEO_VERSION', '28.3' );
+	define( 'WPSEO_PREMIUM_VERSION', '28.3' );
+	define( 'WPSEO_LOCAL_VERSION', '15.7.99' );
+	define( 'MEPR_VERSION', '1.12.18' );
+} elseif ( 'local-missing' === $mode ) {
 	define( 'WPSEO_VERSION', '28.3' );
 	define( 'WPSEO_PREMIUM_VERSION', '28.3' );
 	define( 'MEPR_VERSION', '1.12.18' );
@@ -59,10 +86,16 @@ function get_option( $name, $default = false ) {
 	if ( 'wp_collab_cf_meta_box_suppression_enabled' === $name ) {
 		return true;
 	}
-	if ( 'active_plugins' === $name && in_array( $mode, array( 'mismatch', 'news-mismatch', 'news-missing' ), true ) ) {
+	if ( 'active_plugins' === $name && 'absent' !== $mode ) {
 		$plugins = array( 'wordpress-seo/wp-seo.php', 'wordpress-seo-premium/wp-seo-premium.php' );
 		if ( in_array( $mode, array( 'news-mismatch', 'news-missing' ), true ) ) {
 			$plugins[] = 'wordpress-seo-news/wpseo-news.php';
+		}
+		if ( in_array( $mode, array( 'video-mismatch', 'video-missing' ), true ) ) {
+			$plugins[] = 'wpseo-video/video-seo.php';
+		}
+		if ( in_array( $mode, array( 'local-mismatch', 'local-missing' ), true ) ) {
+			$plugins[] = 'wpseo-local/local-seo.php';
 		}
 		return $plugins;
 	}
@@ -106,12 +139,12 @@ $post = (object) array( 'ID' => 42, 'post_type' => 'post', 'post_content' => 'sa
 
 require dirname( __DIR__ ) . '/wp-collab-cf.php';
 
-if ( in_array( $mode, array( 'mismatch', 'news-mismatch', 'news-missing' ), true ) ) {
+if ( 'absent' !== $mode ) {
 	wp_collab_cf_yoast_filter_editor_features( true );
 }
 $filtered = wp_collab_cf_filter_block_editor_meta_boxes( array() );
 $diagnostics = wp_collab_cf_get_compatibility_adapter_diagnostics();
-if ( ! in_array( $mode, array( 'news-mismatch', 'news-missing' ), true ) ) {
+if ( ! in_array( $mode, $addon_modes, true ) ) {
 	version_policy_assert_same(
 		'mismatch' === $mode ? 'version_mismatch' : 'plugin_absent',
 		$diagnostics['memberpress']['reason'],
@@ -119,18 +152,18 @@ if ( ! in_array( $mode, array( 'news-mismatch', 'news-missing' ), true ) ) {
 	);
 }
 version_policy_assert_same(
-	in_array( $mode, array( 'news-mismatch', 'news-missing' ), true )
+	in_array( $mode, $addon_modes, true )
 		? 'unsupported_addon'
 		: ( 'mismatch' === $mode ? 'version_mismatch' : 'plugin_absent' ),
 	$diagnostics['yoast']['reason'],
 	'Yoast did not fail closed for the version policy.'
 );
-if ( ! in_array( $mode, array( 'news-mismatch', 'news-missing' ), true ) ) {
+if ( ! in_array( $mode, $addon_modes, true ) ) {
 	version_policy_assert_same( false, $diagnostics['memberpress']['applied'], 'MemberPress must not apply below the minimum version.' );
 }
 version_policy_assert_same( false, $diagnostics['yoast']['applied'], 'Yoast must not apply below the minimum version pair.' );
 version_policy_assert_same(
-	in_array( $mode, array( 'mismatch', 'news-mismatch', 'news-missing' ), true ),
+	'absent' !== $mode,
 	isset( $filtered['post']['normal']['high']['wp_collab_cf_yoast_compatibility_blocker'] ),
 	'Only active version drift needs the synthetic Yoast blocker.'
 );

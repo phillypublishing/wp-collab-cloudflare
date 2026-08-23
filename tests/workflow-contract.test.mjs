@@ -67,9 +67,12 @@ function parseWorkflowYaml( source ) {
 			if ( value === '|' ) {
 				result[ key ] = parseLiteral( indent, token.line );
 			} else if ( value === '' ) {
-				assert.ok( cursor < tokens.length && tokens[ cursor ].indent > indent, `Missing value for ${ key } on line ${ token.line }.` );
-				assert.equal( tokens[ cursor ].indent, indent + 2, `Unexpected indentation below ${ key } on line ${ token.line }.` );
-				result[ key ] = parseBlock( indent + 2 );
+				if ( cursor >= tokens.length || tokens[ cursor ].indent <= indent ) {
+					result[ key ] = null;
+				} else {
+					assert.equal( tokens[ cursor ].indent, indent + 2, `Unexpected indentation below ${ key } on line ${ token.line }.` );
+					result[ key ] = parseBlock( indent + 2 );
+				}
 			} else {
 				result[ key ] = scalar( value, token.line );
 			}
@@ -97,7 +100,9 @@ function parseWorkflowYaml( source ) {
 			const value = token.text.slice( 2 ).trim();
 			if ( value.includes( ':' ) ) {
 				const [key, firstValue] = splitPair( value, token.line );
-				const item = { [ key ]: scalar( firstValue, token.line ) };
+				const item = firstValue === '|'
+					? { [ key ]: parseLiteral( indent + 2, token.line ) }
+					: { [ key ]: scalar( firstValue, token.line ) };
 				result.push( parseMap( indent + 2, item ) );
 			} else {
 				result.push( scalar( value, token.line ) );
@@ -122,9 +127,35 @@ assert.throws( () => parseWorkflowYaml( 'name: [unsupported]\n' ), /Unsupported 
 const repoRoot = path.resolve( path.dirname( fileURLToPath( import.meta.url ) ), '..' );
 const workflowPath = path.join( repoRoot, '.github/workflows/wp-plugin-release.yml' );
 const ciPath = path.join( repoRoot, '.github/workflows/ci.yml' );
+const pluginArtifactPath = path.join( repoRoot, '.github/workflows/plugin-artifact.yml' );
 const productionWorkflowPath = path.join( repoRoot, '.github/workflows/worker-production-deploy.yml' );
 const workflowSource = fs.readFileSync( workflowPath, 'utf8' );
 const workflow = parseWorkflowYaml( workflowSource );
+const ciWorkflow = parseWorkflowYaml( fs.readFileSync( ciPath, 'utf8' ) );
+const pluginArtifactWorkflow = parseWorkflowYaml( fs.readFileSync( pluginArtifactPath, 'utf8' ) );
+
+const compatibilityVersionPolicyModes = [
+	'absent',
+	'mismatch',
+	'news-mismatch',
+	'news-missing',
+	'video-mismatch',
+	'video-missing',
+	'local-mismatch',
+	'local-missing',
+];
+const expectedPhpDiagnosticsCommands = [
+	'php test/rtc-diagnostics.php',
+	'php test/compatibility-adapters.php',
+	...compatibilityVersionPolicyModes.map( ( mode ) => `php test/compatibility-version-policy.php ${ mode }` ),
+];
+
+function assertPhpDiagnosticsCommands( steps, workflowName ) {
+	const commands = steps.flatMap( ( step ) => typeof step.run === 'string' ? step.run.split( '\n' ) : [] )
+		.map( ( command ) => command.trim() )
+		.filter( ( command ) => command.startsWith( 'php test/' ) );
+	assert.deepEqual( commands, expectedPhpDiagnosticsCommands, `${ workflowName } must run every PHP diagnostics command exactly once.` );
+}
 
 assert.deepEqual( Object.keys( workflow.on ), ['push'], 'Release workflow must expose only a push trigger.' );
 assert.deepEqual( workflow.on.push.branches, ['main'], 'Release workflow must run only on main.' );
@@ -178,9 +209,9 @@ assert.equal( pluginTest.run, 'npm test', 'Release publication must run plugin t
 assert.equal( audit.run, 'npm audit --omit=dev --audit-level=high', 'Release publication must audit production dependencies.' );
 assert.match( lint.run, /php -l wp-collab-cf\.php/, 'Release publication must lint the plugin entrypoint.' );
 assert.match( lint.run, /includes\/compatibility/, 'Release publication must lint every compatibility module.' );
-for ( const mode of ['rtc-diagnostics.php', 'compatibility-adapters.php', 'absent', 'mismatch', 'news-mismatch', 'news-missing'] ) {
-	assert.ok( diagnostics.run.includes( mode ), `Release diagnostics must cover ${ mode }.` );
-}
+assertPhpDiagnosticsCommands( ciWorkflow.jobs.plugin.steps, 'CI' );
+assertPhpDiagnosticsCommands( pluginArtifactWorkflow.jobs.build.steps, 'Plugin artifact workflow' );
+assertPhpDiagnosticsCommands( job.steps, 'Release workflow' );
 assert.equal( build.run, './scripts/build-plugin-artifact.sh "${ARTIFACT_DIR}"', 'Release must use the canonical artifact builder.' );
 assert.equal( build.env.ARTIFACT_DIR, '${{ runner.temp }}/plugin-release', 'Artifact output must use step-scoped runner temp.' );
 assert.equal( generatedLint.run, 'php -l plugin/wp-collab-cf/build/index.asset.php', 'Release must lint generated runtime metadata.' );
