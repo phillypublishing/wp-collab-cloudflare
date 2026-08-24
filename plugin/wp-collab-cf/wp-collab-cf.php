@@ -2,12 +2,12 @@
 /**
  * Plugin Name: WP Collab Cloudflare
  * Description: Routes Gutenberg real-time collaboration through a Cloudflare Workers relay instead of HTTP polling.
- * Version: 0.5.7
+ * Version: 0.5.8
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WP_COLLAB_CF_VERSION', '0.5.7' );
+define( 'WP_COLLAB_CF_VERSION', '0.5.8' );
 
 require_once __DIR__ . '/includes/compatibility/version-policy.php';
 require_once __DIR__ . '/includes/compatibility/memberpress.php';
@@ -24,7 +24,7 @@ require_once __DIR__ . '/includes/compatibility/meta-box-policy.php';
  *   define( 'WP_COLLAB_CF_AUTH_KEY_ID', '2026-08' ); // Optional during keyed rotation.
  */
 
-add_action( 'admin_enqueue_scripts', 'wp_collab_cf_enqueue_scripts' );
+add_action( 'admin_enqueue_scripts', 'wp_collab_cf_enqueue_scripts', PHP_INT_MAX );
 add_action( 'admin_menu', 'wp_collab_cf_register_settings_page' );
 add_action( 'admin_post_wp_collab_cf_update_meta_box_suppression', 'wp_collab_cf_handle_meta_box_suppression_settings_update' );
 add_action( 'rest_api_init', 'wp_collab_cf_register_rest_routes' );
@@ -929,6 +929,7 @@ function wp_collab_cf_enqueue_scripts( $hook ) {
 					? wp_collab_cf_get_settings_page_url()
 					: '',
 			),
+			'yoastPrimaryCategory' => wp_collab_cf_yoast_primary_category_editor_config(),
 		)
 	);
 }
