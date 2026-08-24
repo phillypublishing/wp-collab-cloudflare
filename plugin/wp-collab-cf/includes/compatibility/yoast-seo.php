@@ -12,6 +12,142 @@ const WP_COLLAB_CF_YOAST_PREMIUM_MINIMUM_VERSION = '28.2';
 const WP_COLLAB_CF_YOAST_NEWS_MINIMUM_VERSION    = '13.3';
 const WP_COLLAB_CF_YOAST_VIDEO_MINIMUM_VERSION   = '15.2';
 const WP_COLLAB_CF_YOAST_LOCAL_MINIMUM_VERSION   = '15.8';
+const WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY = '_yoast_wpseo_primary_category';
+
+/**
+ * Normalize Yoast's primary category meta to its positive integer string form.
+ *
+ * @param mixed $value Candidate primary category ID.
+ * @return string Sanitized primary category ID, or an empty string.
+ */
+function wp_collab_cf_yoast_sanitize_primary_category( $value ) {
+	if ( ! is_int( $value ) && ! is_string( $value ) ) {
+		return '';
+	}
+
+	$digits = (string) $value;
+	if ( ! preg_match( '/^\d+$/', $digits ) ) {
+		return '';
+	}
+
+	$digits = ltrim( $digits, '0' );
+	if ( '' === $digits ) {
+		return '';
+	}
+
+	$maximum = (string) PHP_INT_MAX;
+	if ( strlen( $digits ) > strlen( $maximum ) || ( strlen( $digits ) === strlen( $maximum ) && strcmp( $digits, $maximum ) > 0 ) ) {
+		return '';
+	}
+
+	return $digits;
+}
+
+/**
+ * Require the ordinary post-edit capability for primary category writes.
+ *
+ * @param bool   $allowed   WordPress's prior authorization decision.
+ * @param string $meta_key  Registered meta key.
+ * @param int    $object_id Post ID.
+ * @param int    $user_id   User whose capability is being evaluated.
+ * @return bool Whether the evaluated user may edit the value.
+ */
+function wp_collab_cf_yoast_authorize_primary_category( $allowed, $meta_key, $object_id, $user_id = 0 ) {
+	if ( ! wp_collab_cf_is_meta_box_suppression_enabled() ) {
+		return false;
+	}
+
+	return $user_id > 0
+		? user_can( (int) $user_id, 'edit_post', (int) $object_id )
+		: current_user_can( 'edit_post', (int) $object_id );
+}
+
+/**
+ * Expose Yoast's primary category to authenticated post editors and the CRDT.
+ *
+ * Gutenberg only synchronizes post meta present in the edited REST record. The
+ * upstream Yoast UI persists this value through its legacy metabox form, which
+ * is intentionally absent while this compatibility adapter is active.
+ *
+ * @return bool Whether the meta registration is available for this request.
+ */
+function wp_collab_cf_yoast_register_primary_category_meta() {
+	if (
+		! function_exists( 'register_post_meta' ) ||
+		! wp_collab_cf_is_meta_box_suppression_enabled() ||
+		! defined( 'WPSEO_VERSION' ) ||
+		! defined( 'WPSEO_PREMIUM_VERSION' ) ||
+		! wp_collab_cf_yoast_versions_supported( WPSEO_VERSION, WPSEO_PREMIUM_VERSION )
+	) {
+		return false;
+	}
+
+	return true === register_post_meta(
+		'post',
+		WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY,
+		array(
+			'type'              => 'string',
+			'single'            => true,
+			'show_in_rest'      => true,
+			'sanitize_callback' => 'wp_collab_cf_yoast_sanitize_primary_category',
+			'auth_callback'     => 'wp_collab_cf_yoast_authorize_primary_category',
+		)
+	);
+}
+
+/**
+ * Keep protected Yoast meta out of public REST responses.
+ *
+ * register_meta() authorization callbacks protect writes, not reads. Editors
+ * need the field in context=edit so Gutenberg can synchronize it, while public
+ * consumers do not need the implementation-specific term ID.
+ *
+ * @param object  $response REST response.
+ * @param WP_Post $post     Response post.
+ * @return object REST response.
+ */
+function wp_collab_cf_yoast_hide_primary_category_meta( $response, $post ) {
+	if ( ! is_object( $response ) || ! is_callable( array( $response, 'get_data' ) ) || ! is_callable( array( $response, 'set_data' ) ) ) {
+		return $response;
+	}
+
+	$data = $response->get_data();
+	if (
+		! isset( $data['meta'] ) ||
+		! is_array( $data['meta'] ) ||
+		! array_key_exists( WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY, $data['meta'] ) ||
+		( is_object( $post ) && isset( $post->ID ) && current_user_can( 'edit_post', (int) $post->ID ) )
+	) {
+		return $response;
+	}
+
+	unset( $data['meta'][ WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY ] );
+	$response->set_data( $data );
+
+	return $response;
+}
+
+/**
+ * Return the browser configuration for the RTC-safe Primary Category bridge.
+ *
+ * @return array Sanitized editor configuration.
+ */
+function wp_collab_cf_yoast_primary_category_editor_config() {
+	$diagnostics = wp_collab_cf_yoast_refresh_request_diagnostics();
+	$enabled     = function_exists( 'registered_meta_key_exists' )
+		&& registered_meta_key_exists( 'post', WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY, 'post' )
+		&& ! empty( $diagnostics['eligible'] )
+		&& ! empty( $diagnostics['ownerFilterObserved'] )
+		&& ! empty( $diagnostics['ownerFilterSuppressed'] )
+		&& ! empty( $diagnostics['assetsPruned'] )
+		&& 'post' === wp_collab_cf_yoast_current_post_type();
+
+	return array(
+		'enabled'  => $enabled,
+		'metaKey'  => WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY,
+		'taxonomy' => 'category',
+	);
+}
 
 /**
  * Return the exact editor script entrypoints denied by this adapter.
@@ -996,7 +1132,9 @@ function wp_collab_cf_yoast_finalize_meta_boxes( $wp_meta_boxes, $screen_id, $co
 
 add_action( 'registered_post_type', 'wp_collab_cf_yoast_register_post_type_filter', PHP_INT_MAX, 1 );
 add_action( 'init', 'wp_collab_cf_yoast_register_known_post_type_filters', PHP_INT_MAX );
+add_action( 'init', 'wp_collab_cf_yoast_register_primary_category_meta', PHP_INT_MAX );
 add_filter( 'wpseo_premium_load_emoji_picker', 'wp_collab_cf_yoast_filter_premium_emoji_picker', PHP_INT_MAX );
+add_filter( 'rest_prepare_post', 'wp_collab_cf_yoast_hide_primary_category_meta', 10, 2 );
 add_action( 'admin_enqueue_scripts', 'wp_collab_cf_yoast_prune_editor_assets', PHP_INT_MAX );
 add_action( 'admin_print_scripts', 'wp_collab_cf_yoast_prune_editor_assets', 19 );
 add_action( 'admin_print_styles', 'wp_collab_cf_yoast_prune_editor_assets', 19 );

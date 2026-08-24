@@ -13,6 +13,7 @@ import {
 } from './rtc-diagnostics.mjs';
 import { isSupportedSyncObject } from './sync-object-policy.mjs';
 import { registerMetaBoxSuppressionUi } from './meta-box-suppression-ui.js';
+import { registerYoastPrimaryCategoryBridge } from './yoast-primary-category.js';
 
 const config = window.wpCollabCf || {};
 
@@ -202,3 +203,4 @@ if ( config.wsUrl && config.tokenUrl ) {
 }
 
 registerMetaBoxSuppressionUi();
+registerYoastPrimaryCategoryBridge();

@@ -20,6 +20,7 @@ set_error_handler(
 $compat_actions = array();
 $compat_filters = array();
 $compat_options = array(
+	'wp_collab_cf_meta_box_suppression_enabled' => true,
 	'active_plugins' => array(
 		'wordpress-seo/wp-seo.php',
 		'wordpress-seo-premium/wp-seo-premium.php',
@@ -37,6 +38,9 @@ $compat_scripts = null;
 $compat_styles = null;
 $compat_parse_blocks_calls = 0;
 $compat_policy_filter_calls = 0;
+$compat_registered_post_meta = array();
+$compat_edit_post_permissions = array();
+$compat_user_edit_post_permissions = array();
 
 function add_action( $hook, $callback, $priority = 10, $accepted_args = 1 ) {
 	global $compat_actions;
@@ -90,7 +94,7 @@ function get_site_option( $name, $default = false ) {
 }
 
 function current_user_can( $capability, ...$args ) {
-	global $compat_current_user_can_activate_plugins, $compat_read_post_permissions;
+	global $compat_current_user_can_activate_plugins, $compat_read_post_permissions, $compat_edit_post_permissions;
 	if ( 'activate_plugins' === $capability ) {
 		return $compat_current_user_can_activate_plugins;
 	}
@@ -98,7 +102,33 @@ function current_user_can( $capability, ...$args ) {
 		$post_id = isset( $args[0] ) ? $args[0] : null;
 		return ! array_key_exists( $post_id, $compat_read_post_permissions ) || true === $compat_read_post_permissions[ $post_id ];
 	}
+	if ( 'edit_post' === $capability ) {
+		$post_id = isset( $args[0] ) ? $args[0] : null;
+		return ! array_key_exists( $post_id, $compat_edit_post_permissions ) || true === $compat_edit_post_permissions[ $post_id ];
+	}
 	return true;
+}
+
+function user_can( $user_id, $capability, ...$args ) {
+	global $compat_user_edit_post_permissions;
+	if ( 'edit_post' !== $capability ) {
+		return true;
+	}
+
+	$post_id = isset( $args[0] ) ? $args[0] : null;
+	$key     = (int) $user_id . ':' . $post_id;
+	return ! array_key_exists( $key, $compat_user_edit_post_permissions ) || true === $compat_user_edit_post_permissions[ $key ];
+}
+
+function register_post_meta( $post_type, $meta_key, $args ) {
+	global $compat_registered_post_meta;
+	$compat_registered_post_meta[ $post_type ][ $meta_key ] = $args;
+	return true;
+}
+
+function registered_meta_key_exists( $object_type, $meta_key, $object_subtype = '' ) {
+	global $compat_registered_post_meta;
+	return isset( $compat_registered_post_meta[ $object_subtype ][ $meta_key ] );
 }
 
 function get_post_types() {
@@ -172,6 +202,22 @@ class WP_Post {
 		$this->ID = $id;
 		$this->post_type = $post_type;
 		$this->post_content = $post_content;
+	}
+}
+
+class Compat_REST_Response {
+	private $data;
+
+	public function __construct( $data ) {
+		$this->data = $data;
+	}
+
+	public function get_data() {
+		return $this->data;
+	}
+
+	public function set_data( $data ) {
+		$this->data = $data;
 	}
 }
 
@@ -271,6 +317,11 @@ compat_assert_true(
 );
 compat_assert_same( false, isset( $compat_actions['wp_print_head_scripts'] ), 'The adapter must not rely on the inert wp_print_head_scripts hook.' );
 compat_assert_true( isset( $compat_actions['admin_enqueue_scripts'][ PHP_INT_MAX ] ), 'Enqueue pruning must run after ordinary admin enqueuers.' );
+compat_assert_same(
+	array( 'wp_collab_cf_yoast_prune_editor_assets', 'wp_collab_cf_enqueue_scripts' ),
+	array_column( $compat_actions['admin_enqueue_scripts'][ PHP_INT_MAX ], 'callback' ),
+	'The plugin bundle must read Yoast diagnostics only after the final enqueue-pruning pass.'
+);
 compat_assert_true( isset( $compat_actions['admin_print_scripts'][19] ), 'Admin-head script pruning must run before Core prints at priority 20.' );
 compat_assert_true( isset( $compat_actions['admin_print_styles'][19] ), 'Admin-head style pruning must run before Core prints at priority 20.' );
 compat_assert_true( isset( $compat_actions['admin_print_footer_scripts'][9] ), 'Admin-footer pruning must run before Core prints at priority 10.' );
@@ -278,6 +329,61 @@ compat_assert_same( false, isset( $compat_actions['wp_print_footer_scripts'] ), 
 compat_assert_same( false, isset( $compat_actions['wp_print_styles'] ), 'The admin adapter must not register a front-end style seam.' );
 do_action( 'init' );
 compat_assert_true( isset( $compat_filters['wpseo_enable_editor_features_post'][ PHP_INT_MAX ] ), 'The owner filter must be registered at init before post meta boxes and admin enqueue run.' );
+compat_assert_true(
+	isset( $compat_registered_post_meta['post'][ WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY ] ),
+	'The RTC bridge must register Yoast primary category meta for the post REST response.'
+);
+$compat_options['wp_collab_cf_meta_box_suppression_enabled'] = false;
+$compat_registered_post_meta = array();
+compat_assert_same( false, wp_collab_cf_yoast_register_primary_category_meta(), 'A disabled site policy must not register primary category REST meta.' );
+compat_assert_same( array(), $compat_registered_post_meta, 'A disabled site policy must leave the REST meta registry untouched.' );
+$compat_options['wp_collab_cf_meta_box_suppression_enabled'] = true;
+compat_assert_same( true, wp_collab_cf_yoast_register_primary_category_meta(), 'Re-enabled suppression must restore primary category REST registration.' );
+$primary_category_meta = $compat_registered_post_meta['post'][ WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY ];
+compat_assert_same( true, $primary_category_meta['show_in_rest'], 'Primary category meta must be visible to the authenticated editor REST response.' );
+compat_assert_same( true, $primary_category_meta['single'], 'Primary category meta must remain a scalar.' );
+compat_assert_same( 'string', $primary_category_meta['type'], 'Primary category meta must preserve Yoast\'s string storage contract.' );
+compat_assert_same( '42', call_user_func( $primary_category_meta['sanitize_callback'], '0042' ), 'Primary category IDs must be normalized to positive integer strings.' );
+compat_assert_same( '', call_user_func( $primary_category_meta['sanitize_callback'], '42x' ), 'Malformed primary category IDs must be rejected.' );
+compat_assert_same( '', call_user_func( $primary_category_meta['sanitize_callback'], array( 42 ) ), 'Non-scalar primary category IDs must be rejected.' );
+compat_assert_same( '', call_user_func( $primary_category_meta['sanitize_callback'], '000' ), 'Zero is not a valid primary category ID.' );
+compat_assert_same( '', call_user_func( $primary_category_meta['sanitize_callback'], (string) PHP_INT_MAX . '0' ), 'Overflowing primary category IDs must be rejected.' );
+compat_assert_same( true, call_user_func( $primary_category_meta['auth_callback'], false, WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY, 42 ), 'Editors must be allowed to update primary category meta.' );
+$compat_edit_post_permissions[42] = false;
+compat_assert_same( false, call_user_func( $primary_category_meta['auth_callback'], true, '_yoast_wpseo_primary_category', 42 ), 'Users who cannot edit the post must not update primary category meta.' );
+$compat_user_edit_post_permissions['7:42'] = true;
+compat_assert_same( true, call_user_func( $primary_category_meta['auth_callback'], false, WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY, 42, 7 ), 'Explicit user capability checks must evaluate the named editor.' );
+$compat_user_edit_post_permissions['7:42'] = false;
+compat_assert_same( false, call_user_func( $primary_category_meta['auth_callback'], true, WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY, 42, 7 ), 'Explicit user capability checks must reject the named non-editor.' );
+$public_primary_response = new Compat_REST_Response(
+	array(
+		'meta' => array(
+			WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY => '42',
+			'public_meta' => 'preserved',
+		),
+	)
+);
+wp_collab_cf_yoast_hide_primary_category_meta( $public_primary_response, new WP_Post( 42, 'post', '' ) );
+compat_assert_same(
+	array( 'public_meta' => 'preserved' ),
+	$public_primary_response->get_data()['meta'],
+	'Public REST responses must remove only Yoast primary category meta.'
+);
+unset( $compat_edit_post_permissions[42] );
+$editor_primary_response = new Compat_REST_Response(
+	array(
+		'meta' => array(
+			WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY => '42',
+		),
+	)
+);
+$editor_primary_response = apply_filters( 'rest_prepare_post', $editor_primary_response, new WP_Post( 42, 'post', '' ) );
+compat_assert_same(
+	array( WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY => '42' ),
+	$editor_primary_response->get_data()['meta'],
+	'Authenticated editor REST responses must preserve primary category meta for Gutenberg sync.'
+);
+compat_assert_true( isset( $compat_filters['rest_prepare_post'][10] ), 'Public REST responses must strip the protected primary category meta.' );
 
 $current_screen = new Compat_Screen( true );
 $post = new WP_Post( 42, 'post', 'safe' );
@@ -465,6 +571,7 @@ compat_assert_same( false, isset( $GLOBALS['wp_collab_cf_yoast_stable_request_di
 $current_screen = new Compat_Screen( true );
 $block_editor = wp_collab_cf_yoast_get_stable_request_diagnostics();
 compat_assert_same( true, $block_editor['eligible'], 'The same request must be reevaluated after the block-editor screen becomes available.' );
+compat_assert_same( false, wp_collab_cf_yoast_primary_category_editor_config()['enabled'], 'Stable eligibility alone must not enable the bridge before owner suppression and asset pruning finish.' );
 compat_assert_same( 1, $compat_policy_filter_calls, 'The suppression policy should be read once after screen confirmation.' );
 compat_reset_adapter_state();
 
@@ -562,6 +669,7 @@ compat_assert_same( true, $yoast['ownerFilterObserved'], 'Owner-filter consultat
 compat_assert_same( true, $yoast['eligible'], 'Yoast eligibility must be reported.' );
 compat_assert_same( true, $yoast['applied'], 'Yoast application must be reported.' );
 compat_assert_same( 'applied', $yoast['reason'], 'Yoast needs a stable applied reason.' );
+compat_assert_same( true, wp_collab_cf_yoast_primary_category_editor_config()['enabled'], 'A fully applied post editor must receive the RTC-safe Primary Category bridge.' );
 wp_collab_cf_yoast_prune_editor_assets();
 $yoast_after_late_prune = wp_collab_cf_get_compatibility_adapter_diagnostics()['yoast'];
 compat_assert_same( true, $yoast_after_late_prune['applied'], 'A later pruning seam must preserve a completed Yoast application.' );
@@ -571,6 +679,7 @@ wp_collab_cf_yoast_prune_editor_assets();
 $yoast_after_late_failure = wp_collab_cf_get_compatibility_adapter_diagnostics()['yoast'];
 compat_assert_same( false, $yoast_after_late_failure['applied'], 'A denied asset printed after finalization must revoke Yoast application.' );
 compat_assert_same( 'asset_already_printed', $yoast_after_late_failure['reason'], 'A denied asset printed after finalization must remain terminal.' );
+compat_assert_same( false, wp_collab_cf_yoast_primary_category_editor_config()['enabled'], 'A terminal adapter failure must disable the Primary Category bridge.' );
 compat_assert_same( array(), array_values( array_intersect( wp_collab_cf_yoast_denied_script_handles(), $compat_scripts->queue ) ), 'Every denied script must leave the queue.' );
 compat_assert_same( array(), array_values( array_intersect( wp_collab_cf_yoast_denied_script_handles(), $compat_scripts->to_do ) ), 'Every denied script must leave the pending print list.' );
 compat_assert_same( array(), array_values( array_intersect( wp_collab_cf_yoast_denied_style_handles(), $compat_styles->queue ) ), 'Every paired editor-only style must leave the queue.' );
@@ -596,6 +705,8 @@ compat_assert_same( 'owner_filter_unobserved', wp_collab_cf_get_compatibility_ad
 $compat_options['wp_collab_cf_meta_box_suppression_enabled'] = false;
 compat_reset_adapter_state();
 compat_assert_same( true, wp_collab_cf_yoast_filter_editor_features( true ), 'A disabled site policy must preserve the Yoast owner decision.' );
+compat_assert_same( false, wp_collab_cf_yoast_primary_category_editor_config()['enabled'], 'The Primary Category bridge must stay off when the adapter is disabled.' );
+compat_assert_same( false, call_user_func( $primary_category_meta['auth_callback'], true, WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY, 42, 7 ), 'A disabled site policy must reject REST writes to primary category meta.' );
 compat_assert_same( true, wp_collab_cf_yoast_filter_premium_emoji_picker( true ), 'A disabled site policy must preserve the Premium emoji picker.' );
 $filtered = wp_collab_cf_filter_block_editor_meta_boxes( $yoast_box );
 compat_assert_true( isset( $filtered['post']['normal']['high']['wpseo_meta'] ), 'A disabled site policy must preserve the Yoast box.' );
