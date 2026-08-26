@@ -5,6 +5,7 @@ import * as Y from "yjs";
 
 import {
   AuthError,
+  getAuthenticatedConnectionIdentity,
   getAuthExpiryDelay,
   parseAuthKeys,
   routeAfterWebSocketGuard,
@@ -23,8 +24,12 @@ import {
   trySetConnectionState,
 } from "./limits.js";
 import {
+  createConnectionTelemetryId,
   recordConfigurationInvalid,
   recordConnectionAccepted,
+  recordConnectionClosed,
+  recordConnectionError,
+  recordConnectionOpened,
   recordConnectionRejected,
   recordResourceLimit,
 } from "./observability.js";
@@ -32,6 +37,9 @@ import {
 const SESSION_EXPIRY_STATE_KEY = "__wpCollabSessionExpires";
 const LEGACY_AUTH_EXPIRY_STATE_KEY = "__wpCollabAuthExpires";
 const RATE_STATE_KEY = "__wpCollabRateWindow";
+const CONNECTION_IDENTITY_STATE_KEY = "__wpCollabIdentity";
+const CONNECTION_OPENED_AT_STATE_KEY = "__wpCollabOpenedAt";
+const CONNECTION_TELEMETRY_ID_STATE_KEY = "__wpCollabTelemetryId";
 const SESSION_EXPIRED_CLOSE_CODE = 4001;
 const RESOURCE_LIMIT_CLOSE_CODE = 4008;
 type RateState = {
@@ -39,10 +47,16 @@ type RateState = {
   messagesInWindow: number;
   bytesInWindow: number;
 };
+type ConnectionIdentity = NonNullable<
+  ReturnType<typeof getAuthenticatedConnectionIdentity>
+>;
 type CollaborationConnectionState = Record<string, unknown> & {
   [SESSION_EXPIRY_STATE_KEY]?: number;
   [LEGACY_AUTH_EXPIRY_STATE_KEY]?: number;
   [RATE_STATE_KEY]?: RateState;
+  [CONNECTION_IDENTITY_STATE_KEY]?: ConnectionIdentity;
+  [CONNECTION_OPENED_AT_STATE_KEY]?: number;
+  [CONNECTION_TELEMETRY_ID_STATE_KEY]?: string;
 };
 type ResourceLimits = ReturnType<typeof parseResourceLimits>;
 
@@ -111,6 +125,32 @@ export class Collaboration extends YServer {
     connection: Connection<CollaborationConnectionState>,
     context: ConnectionContext
   ): Promise<void> {
+    const identity = getAuthenticatedConnectionIdentity(context.request);
+    if (!identity) {
+      connection.close(SESSION_EXPIRED_CLOSE_CODE, "Authentication context missing");
+      return;
+    }
+
+    const openedAt = Date.now();
+    const telemetryConnectionId = createConnectionTelemetryId();
+    const sessionExpiresAt =
+      openedAt + this.resourceLimits.connectionTimeoutMilliseconds;
+    if (
+      !trySetConnectionState(connection, (state) => ({
+        ...(state || {}),
+        [SESSION_EXPIRY_STATE_KEY]: sessionExpiresAt,
+        [CONNECTION_IDENTITY_STATE_KEY]: identity,
+        [CONNECTION_OPENED_AT_STATE_KEY]: openedAt,
+        [CONNECTION_TELEMETRY_ID_STATE_KEY]: telemetryConnectionId,
+      }))
+    ) {
+      this.rejectForResourceLimit(
+        connection,
+        "connection_state_limit_exceeded"
+      );
+      return;
+    }
+
     let connectionCount = 0;
     for (const _connection of this.getConnections()) {
       connectionCount += 1;
@@ -131,26 +171,16 @@ export class Collaboration extends YServer {
       return;
     }
 
-    const sessionExpiresAt =
-      Date.now() + this.resourceLimits.connectionTimeoutMilliseconds;
-    if (
-      !trySetConnectionState(connection, (state) => ({
-        ...(state || {}),
-        [SESSION_EXPIRY_STATE_KEY]: sessionExpiresAt,
-      }))
-    ) {
-      this.rejectForResourceLimit(
-        connection,
-        "connection_state_limit_exceeded"
-      );
-      return;
-    }
-
     const currentAlarm = await this.ctx.storage.getAlarm();
     if (currentAlarm === null || sessionExpiresAt < currentAlarm) {
       await this.ctx.storage.setAlarm(sessionExpiresAt);
     }
     await super.onConnect(connection, context);
+    recordConnectionOpened(
+      this.metrics,
+      connectionLifecycleContext(connection, this.name),
+      { roomConnectionCount: connectionCount }
+    );
   }
 
   async onMessage(
@@ -267,7 +297,18 @@ export class Collaboration extends YServer {
     wasClean: boolean
   ): Promise<void> {
     await super.onClose(connection, code, reason, wasClean);
-    for (const _connection of this.getConnections()) {
+    const remainingConnectionCount = countConnections(this.getConnections());
+    recordConnectionClosed(
+      this.metrics,
+      connectionLifecycleContext(connection, this.name),
+      {
+        closeCode: code,
+        wasClean,
+        durationMilliseconds: connectionDurationMilliseconds(connection.state),
+        roomConnectionCount: remainingConnectionCount,
+      }
+    );
+    if (remainingConnectionCount > 0) {
       return;
     }
     await this.resetDocument();
@@ -275,6 +316,20 @@ export class Collaboration extends YServer {
     // Keep the existing earliest alarm. If its connection closed early, the
     // harmless extra wakeup will compact the schedule in one O(N) scan. This
     // avoids rescanning every remaining socket during mass disconnects.
+  }
+
+  onError(
+    connection: Connection<CollaborationConnectionState>,
+    _error: unknown
+  ): void {
+    recordConnectionError(
+      this.metrics,
+      connectionLifecycleContext(connection, this.name),
+      {
+        durationMilliseconds: connectionDurationMilliseconds(connection.state),
+        roomConnectionCount: countConnections(this.getConnections()),
+      }
+    );
   }
 
   async onAlarm(): Promise<void> {
@@ -299,6 +354,47 @@ export class Collaboration extends YServer {
     }
   }
 
+}
+
+function countConnections(connections: Iterable<Connection>): number {
+  let count = 0;
+  for (const _connection of connections) {
+    count += 1;
+  }
+  return count;
+}
+
+function connectionDurationMilliseconds(
+  state: CollaborationConnectionState | null | undefined,
+  nowMilliseconds = Date.now()
+): number {
+  const openedAt = state?.[CONNECTION_OPENED_AT_STATE_KEY];
+  return typeof openedAt === "number" &&
+    Number.isSafeInteger(openedAt) &&
+    openedAt <= nowMilliseconds
+    ? nowMilliseconds - openedAt
+    : 0;
+}
+
+function connectionLifecycleContext(
+  connection: Connection<CollaborationConnectionState>,
+  room: string
+) {
+  const identity = connection.state?.[CONNECTION_IDENTITY_STATE_KEY];
+  const telemetryConnectionId =
+    connection.state?.[CONNECTION_TELEMETRY_ID_STATE_KEY];
+  return {
+    siteId: identity?.siteId || "unknown",
+    blogId: identity?.blogId || "unknown",
+    objectType: identity?.objectType || "unknown",
+    objectId: identity?.objectId || "unknown",
+    userId: identity?.userId || "unknown",
+    room,
+    connectionId:
+      typeof telemetryConnectionId === "string"
+        ? telemetryConnectionId
+        : "unknown",
+  };
 }
 
 function getConnectionExpiryMilliseconds(
@@ -430,14 +526,14 @@ export default {
       routePartykitRequest(request, env, {
         onBeforeConnect: async (connectionRequest, lobby) => {
           try {
-            const claims = await verifyConnectionRequest({
+            const verifiedConnection = await verifyConnectionRequest({
               request: connectionRequest,
               room: lobby.name,
               authKeys: getAuthKeys(env),
             });
             return sanitizeAuthenticatedRequest(
               connectionRequest,
-              Number(claims.exp)
+              verifiedConnection
             );
           } catch (error) {
             return authFailure(error, env.COLLAB_METRICS);

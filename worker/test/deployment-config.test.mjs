@@ -106,6 +106,17 @@ test("named deployments bind isolated Analytics Engine datasets", async () => {
   );
 });
 
+test("named deployments retain every attributable connection lifecycle log", async () => {
+  const config = await wranglerConfig;
+
+  for (const environment of ["staging", "production"]) {
+    assert.deepEqual(config.env[environment].observability, {
+      enabled: true,
+      head_sampling_rate: 1,
+    });
+  }
+});
+
 test("every deployment separates four-hour sessions from short-lived grants", async () => {
   const config = await wranglerConfig;
 

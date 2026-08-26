@@ -187,31 +187,64 @@ WordPress ID/secret while its Worker key remains present.
 
 ## Logs and alerts
 
-The Worker emits JSON events containing only the service name, event code,
-status, observed size, and configured limit. It deliberately excludes URLs,
-headers, room names, user IDs, origins, credential claims, and message content.
+The Worker keeps authentication failures and resource-limit events aggregate,
+but emits attributable JSON lifecycle events after authentication succeeds.
+Named staging and production environments set Workers Logs head sampling to
+`1`, so an individual open, close, or runtime error is not intentionally
+discarded before ingestion.
+
+`connection_opened`, `connection_closed`, and `connection_error` contain the
+verified site ID, blog ID, object type, object/post ID, WordPress user ID, room,
+server-generated connection correlation ID, connection duration, and room
+connection count.
+Close events also include the numeric close code, a bounded status, and
+`wasClean`. The Worker never logs the bearer token, signing key, request
+headers, Origin, document content, Yjs messages, raw exception text, or raw
+client-supplied close reason.
+
+These identifiers come only from a successfully verified WordPress credential.
+The edge handler strips the credential-bearing subprotocol, replaces any
+client-supplied internal identity headers with the verified values, and stores
+that bounded identity in the hibernating WebSocket attachment for later close
+and error events. Failed authentication cannot create attributable lifecycle
+records from untrusted claims.
 
 Named staging and production deployments also bind isolated Workers Analytics
 Engine datasets named `wp_collab_cloudflare_staging` and
 `wp_collab_cloudflare_production`. Local development has no analytics binding.
 Metrics are best-effort: a missing binding or failed write cannot alter an auth
-decision, WebSocket upgrade, or resource-limit close.
+decision, WebSocket upgrade, or resource-limit close. Analytics Engine may
+sample stored data independently of Workers Logs; lifecycle rows use a
+server-generated connection correlation ID as their sampling index so events
+from one socket remain correlatable without trusting PartyServer's
+client-selectable `_pk` value.
 
-The dataset schema is intentionally count-only and closed to request-derived
-labels:
+The aggregate schema remains backward compatible in its first fields. Lifecycle
+events extend it with reviewed, bounded operational identifiers:
 
 | Column | Meaning |
 | --- | --- |
-| `index1` | Constant sampling key `wp-collab-cloudflare` |
-| `blob1` | Allowlisted event: `configuration_invalid`, `connection_accepted`, `connection_rejected`, or `resource_limit` |
+| `index1` | Constant `wp-collab-cloudflare` for aggregate events; server-generated connection correlation ID for lifecycle events |
+| `blob1` | Allowlisted event, including `connection_opened`, `connection_closed`, and `connection_error` |
 | `blob2` | Allowlisted status or rejection/limit code |
+| `blob3` | Verified site ID for lifecycle events |
+| `blob4` | Verified WordPress blog ID for lifecycle events |
+| `blob5` | Verified Gutenberg object type, such as `postType/post` |
+| `blob6` | Verified object/post ID, or `collection` |
+| `blob7` | Verified WordPress user ID |
+| `blob8` | Verified room ID |
+| `blob9` | Server-generated connection correlation ID |
 | `double1` | Event count, always `1` |
 | `double2` | Non-negative observed byte/connection count when applicable, otherwise `0` |
 | `double3` | Non-negative configured limit when applicable, otherwise `0` |
+| `double4` | WebSocket close code for close events |
+| `double5` | Connection duration in milliseconds |
+| `double6` | `1` when a close was clean, otherwise `0` |
+| `double7` | Room connection count observed at the lifecycle boundary |
 
-No metric contains a URL, room, site, blog, user, token, origin, header,
-document content, or raw request value. Keep this schema closed; use `unknown`
-for a newly encountered code until it has been reviewed and explicitly added.
+Keep this schema closed; use `unknown` for any identifier or code that does not
+match its reviewed shape. Never add arbitrary request strings, error messages,
+or close reasons as labels.
 
 After a staging deployment has produced data, use an Account Analytics Read
 token with Cloudflare's Analytics Engine SQL API. This dashboard query shows
@@ -242,6 +275,31 @@ WHERE timestamp > NOW() - INTERVAL '1' HOUR
   AND blob1 = 'resource_limit'
 GROUP BY limit_code
 ORDER BY event_count DESC
+```
+
+For an editor incident, query a specific post ID and inspect the socket sequence:
+
+```sql
+SELECT
+  timestamp,
+  blob1 AS event,
+  blob2 AS status,
+  blob3 AS site_id,
+  blob4 AS blog_id,
+  blob5 AS object_type,
+  blob6 AS object_id,
+  blob7 AS user_id,
+  blob8 AS room_id,
+  blob9 AS connection_id,
+  double4 AS close_code,
+  double5 AS duration_ms,
+  double6 AS was_clean,
+  double7 AS room_connection_count
+FROM wp_collab_cloudflare_production
+WHERE timestamp > NOW() - INTERVAL '1' HOUR
+  AND blob1 IN ('connection_opened', 'connection_closed', 'connection_error')
+  AND blob6 = '305806'
+ORDER BY timestamp ASC
 ```
 
 Start with two deterministic alert signals: any `configuration_invalid` or
@@ -281,8 +339,9 @@ names, or user IDs. Tune and validate that rule in staging; NAT and enterprise
 egress make a universal per-IP threshold unsafe to infer here.
 
 Cloudflare notes that `wrangler tail` holds WebSocket request logs until the
-socket closes and should not be attached to a high-volume Worker. Prefer
-sampled observability and bounded incident windows.
+socket closes and should not be attached to a high-volume Worker. Use bounded
+incident windows and keep attributable log retention no longer than the
+operator's incident-response policy requires.
 
 ## Ephemeral room lifecycle
 

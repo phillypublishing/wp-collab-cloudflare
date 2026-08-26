@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   AuthError,
+  getAuthenticatedConnectionIdentity,
   getAuthExpiryDelay,
   parseAuthKeys,
   routeAfterWebSocketGuard,
@@ -135,16 +136,23 @@ test("parseAuthKeys rejects malformed or weak keyrings", () => {
 
 test("accepts a valid room-scoped credential from the matching Origin", async () => {
   const token = await mintToken();
-  const claims = await verifyConnectionRequest({
+  const verifiedConnection = await verifyConnectionRequest({
     request: makeRequest(token),
     room,
     authKeys: { [site]: secret },
     nowSeconds,
   });
 
-  assert.equal(claims.site, site);
-  assert.equal(claims.room, room);
-  assert.equal(claims.sub, "7");
+  assert.equal(verifiedConnection.claims.site, site);
+  assert.equal(verifiedConnection.claims.room, room);
+  assert.equal(verifiedConnection.claims.sub, "7");
+  assert.deepEqual(verifiedConnection.identity, {
+    siteId: site,
+    blogId: "1",
+    objectType: "postType/post",
+    objectId: "123",
+    userId: "7",
+  });
 });
 
 test("supports keyed rotation while retaining an explicit legacy bridge", async () => {
@@ -167,7 +175,7 @@ test("supports keyed rotation while retaining an explicit legacy bridge", async 
     authKeys,
     nowSeconds,
   });
-  assert.equal(keyedClaims.kid, "2026-08");
+  assert.equal(keyedClaims.claims.kid, "2026-08");
 
   const legacyClaims = await verifyConnectionRequest({
     request: makeRequest(await mintToken()),
@@ -175,7 +183,7 @@ test("supports keyed rotation while retaining an explicit legacy bridge", async 
     authKeys,
     nowSeconds,
   });
-  assert.equal(legacyClaims.kid, undefined);
+  assert.equal(legacyClaims.claims.kid, undefined);
 
   await expectAuthError(
     verifyConnectionRequest({
@@ -224,7 +232,7 @@ test("normalizes an explicit default Origin port", async () => {
     nowSeconds,
   });
 
-  assert.equal(claims.origin, `${origin}:443`);
+  assert.equal(claims.claims.origin, `${origin}:443`);
 });
 
 test("rejects missing, malformed, and incorrectly signed credentials", async () => {
@@ -369,9 +377,59 @@ test("rejects room and site namespace confusion", async () => {
   );
 });
 
-test("strips the credential header and forwards only the expiry internally", async () => {
+test("rejects WordPress identifiers wider than the database ID columns", async () => {
+  const overlongId = "1".repeat(21);
+  await expectAuthError(
+    verifyConnectionRequest({
+      request: makeRequest(await mintToken({ sub: overlongId })),
+      room,
+      authKeys: { [site]: secret },
+      nowSeconds,
+    }),
+    401,
+    "invalid_claims"
+  );
+  await expectAuthError(
+    verifyConnectionRequest({
+      request: makeRequest(await mintToken({ blog: overlongId })),
+      room,
+      authKeys: { [site]: secret },
+      nowSeconds,
+    }),
+    401,
+    "invalid_claims"
+  );
+
+  const encodedObjectId = base64UrlEncode(encoder.encode(overlongId));
+  const overlongObjectRoom =
+    `v1.${site}.1.cG9zdFR5cGUvcG9zdA.${encodedObjectId}`;
+  await expectAuthError(
+    verifyConnectionRequest({
+      request: makeRequest(await mintToken({ room: overlongObjectRoom })),
+      room: overlongObjectRoom,
+      authKeys: { [site]: secret },
+      nowSeconds,
+    }),
+    403,
+    "room_mismatch"
+  );
+});
+
+test("strips the credential and forwards only verified operational identity internally", async () => {
   const request = makeRequest(await mintToken());
-  const sanitized = sanitizeAuthenticatedRequest(request, nowSeconds + 60);
+  const verifiedConnection = await verifyConnectionRequest({
+    request,
+    room,
+    authKeys: { [site]: secret },
+    nowSeconds,
+  });
+  const spoofedHeaders = new Headers(request.headers);
+  spoofedHeaders.set("X-WP-Collab-User", "999");
+  spoofedHeaders.set("X-WP-Collab-Object-Id", "999");
+  const sanitized = sanitizeAuthenticatedRequest(
+    new Request(request, { headers: spoofedHeaders }),
+    verifiedConnection
+  );
 
   assert.equal(sanitized.url, request.url);
   assert.equal(
@@ -382,7 +440,54 @@ test("strips the credential header and forwards only the expiry internally", asy
     sanitized.headers.get("X-WP-Collab-Auth-Expires"),
     String(nowSeconds + 60)
   );
+  assert.deepEqual(getAuthenticatedConnectionIdentity(sanitized), {
+    siteId: site,
+    blogId: "1",
+    objectType: "postType/post",
+    objectId: "123",
+    userId: "7",
+  });
   assert.equal(new URL(sanitized.url).pathname.endsWith(room), true);
+});
+
+test("rejects missing or malformed internal connection identity", async () => {
+  const request = makeRequest(await mintToken());
+  const verifiedConnection = await verifyConnectionRequest({
+    request,
+    room,
+    authKeys: { [site]: secret },
+    nowSeconds,
+  });
+  const sanitized = sanitizeAuthenticatedRequest(request, verifiedConnection);
+  const identityHeaders = [
+    "X-WP-Collab-Site",
+    "X-WP-Collab-Blog",
+    "X-WP-Collab-Object-Type",
+    "X-WP-Collab-Object-Id",
+    "X-WP-Collab-User",
+  ];
+
+  for (const header of identityHeaders) {
+    const missingHeaders = new Headers(sanitized.headers);
+    missingHeaders.delete(header);
+    assert.equal(
+      getAuthenticatedConnectionIdentity(
+        new Request(sanitized, { headers: missingHeaders })
+      ),
+      null,
+      `${header} is required`
+    );
+
+    const malformedHeaders = new Headers(sanitized.headers);
+    malformedHeaders.set(header, "not a verified identity");
+    assert.equal(
+      getAuthenticatedConnectionIdentity(
+        new Request(sanitized, { headers: malformedHeaders })
+      ),
+      null,
+      `${header} must retain its verified shape`
+    );
+  }
 });
 
 test("rejects non-WebSocket room requests before invoking PartyServer", async () => {
@@ -446,7 +551,16 @@ test("allows a WebSocket upgrade to reach PartyServer", async () => {
 test("computes the remaining connection-grant validity", () => {
   const request = sanitizeAuthenticatedRequest(
     makeRequest(null),
-    nowSeconds + 60
+    {
+      claims: { exp: nowSeconds + 60 },
+      identity: {
+        siteId: site,
+        blogId: "1",
+        objectType: "postType/post",
+        objectId: "123",
+        userId: "7",
+      },
+    }
   );
   assert.equal(getAuthExpiryDelay(request, nowSeconds * 1000), 60_000);
   assert.equal(
