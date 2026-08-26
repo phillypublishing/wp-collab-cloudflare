@@ -3,6 +3,11 @@
 define( 'ABSPATH', '/wordpress/' );
 define( 'WP_PLUGIN_DIR', '/wordpress/wp-content/plugins' );
 define( 'WPMU_PLUGIN_DIR', '/wordpress/wp-content/mu-plugins' );
+$rtc_test_default_logging_disabled = in_array( '--credential-logging-default-disabled', $argv, true );
+if ( ! $rtc_test_default_logging_disabled ) {
+	define( 'WP_COLLAB_CF_LOG_CREDENTIAL_REQUESTS', true );
+}
+define( 'WP_COLLAB_CF_SITE_ID', 'test_site_1234567890' );
 
 error_reporting( E_ALL );
 set_error_handler(
@@ -20,6 +25,7 @@ $rtc_registered_routes = array();
 $rtc_current_user_can_manage_options = true;
 $rtc_update_option_should_fail = false;
 $rtc_options_pages = array();
+$rtc_credential_logging_filter_value = null;
 
 function add_action( $hook, $callback, $priority = 10, $accepted_args = 1 ) {
 	global $rtc_registered_actions;
@@ -30,10 +36,13 @@ function add_filter( $hook, $callback, $priority = 10, $accepted_args = 1 ) {
 	$rtc_registered_filters[] = compact( 'hook', 'callback', 'priority', 'accepted_args' );
 }
 function apply_filters( $hook, $value, ...$args ) {
-	global $rtc_suppression_filter_value, $rtc_suppression_filter_args;
+	global $rtc_suppression_filter_value, $rtc_suppression_filter_args, $rtc_credential_logging_filter_value;
 	if ( 'wp_collab_cf_suppressed_meta_box_ids' === $hook ) {
 		$rtc_suppression_filter_args = $args;
 		return $rtc_suppression_filter_value;
+	}
+	if ( 'wp_collab_cf_log_credential_requests' === $hook && null !== $rtc_credential_logging_filter_value ) {
+		return $rtc_credential_logging_filter_value;
 	}
 	return $value;
 }
@@ -95,6 +104,15 @@ function wp_strip_all_tags( $value ) {
 }
 function wp_normalize_path( $value ) {
 	return str_replace( '\\', '/', $value );
+}
+function get_current_user_id() {
+	return 17;
+}
+function get_current_blog_id() {
+	return 3;
+}
+function wp_json_encode( $value, $flags = 0 ) {
+	return json_encode( $value, $flags );
 }
 
 class WP_REST_Server {
@@ -159,6 +177,96 @@ function rtc_diagnostics_assert_same( $expected, $actual, $message ) {
 		exit( 1 );
 	}
 }
+
+if ( $rtc_test_default_logging_disabled ) {
+	$credential_log_path = tempnam( sys_get_temp_dir(), 'wp-collab-cf-log-' );
+	$previous_error_log  = ini_get( 'error_log' );
+	ini_set( 'error_log', $credential_log_path );
+	rtc_diagnostics_assert_same( false, wp_collab_cf_should_log_credential_requests(), 'Credential logging must default to disabled when the constant is absent.' );
+	rtc_diagnostics_assert_same( false, wp_collab_cf_log_credential_request( 'postType/post', 305806, array(), 1 ), 'Default-disabled credential logging must not write a record.' );
+	rtc_diagnostics_assert_same( '', file_get_contents( $credential_log_path ), 'Default-disabled credential logging must leave the PHP error log untouched.' );
+	ini_set( 'error_log', $previous_error_log );
+	unlink( $credential_log_path );
+	echo "Credential logging default-disabled contract passed.\n";
+	exit( 0 );
+}
+
+$credential_result     = array(
+	'room'  => 'must-not-be-logged',
+	'token' => 'must-not-be-logged',
+);
+$credential_log_record = wp_collab_cf_build_credential_log_record(
+	'postType/post',
+	305806,
+	$credential_result,
+	23.6
+);
+rtc_diagnostics_assert_same(
+	array(
+		'schema'     => 'wp-collab-cf-credential/v1',
+		'event'      => 'credential_request',
+		'status'     => 'issued',
+		'durationMs' => 24,
+		'httpStatus' => 200,
+		'siteId'     => 'test_site_1234567890',
+		'blogId'     => '3',
+		'objectType' => 'postType/post',
+		'objectId'   => '305806',
+		'userId'     => '17',
+	),
+	$credential_log_record,
+	'Credential timing logs must contain only bounded attribution and outcome fields.'
+);
+
+$credential_error_record = wp_collab_cf_build_credential_log_record(
+	"postType/post\nforged",
+	array( 'unexpected' ),
+	new WP_Error( 'wp_collab_cf_forbidden_object', 'Private error message', array( 'status' => 403 ) ),
+	-10
+);
+rtc_diagnostics_assert_same(
+	array(
+		'schema'     => 'wp-collab-cf-credential/v1',
+		'event'      => 'credential_request',
+		'status'     => 'error',
+		'durationMs' => 0,
+		'httpStatus' => 403,
+		'siteId'     => 'test_site_1234567890',
+		'blogId'     => '3',
+		'objectType' => null,
+		'objectId'   => null,
+		'userId'     => '17',
+		'errorCode'  => 'wp_collab_cf_forbidden_object',
+	),
+	$credential_error_record,
+	'Credential error logs must drop malformed identifiers and private messages.'
+);
+
+$credential_log_path = tempnam( sys_get_temp_dir(), 'wp-collab-cf-log-' );
+$previous_error_log  = ini_get( 'error_log' );
+ini_set( 'error_log', $credential_log_path );
+wp_collab_cf_log_credential_request( 'postType/post', 305806, $credential_result, 23.6 );
+$credential_log_contents = file_get_contents( $credential_log_path );
+rtc_diagnostics_assert_same( true, false !== strpos( $credential_log_contents, '[wp-collab-cf] ' ), 'Enabled credential logging must use a stable prefix.' );
+rtc_diagnostics_assert_same( true, false !== strpos( $credential_log_contents, '"objectId":"305806"' ), 'Enabled credential logging must retain the bounded post ID.' );
+rtc_diagnostics_assert_same( false, false !== strpos( $credential_log_contents, 'must-not-be-logged' ), 'Credential logging must never contain rooms or tokens.' );
+
+file_put_contents( $credential_log_path, '' );
+$invalid_credential_response = wp_collab_cf_rest_issue_credentials(
+	new WP_REST_Request( array( 'objectType' => 'postType/post' ) )
+);
+rtc_diagnostics_assert_same( 'wp_collab_cf_invalid_object', $invalid_credential_response->get_error_code(), 'The credential endpoint must retain its validation error.' );
+$credential_log_contents = file_get_contents( $credential_log_path );
+rtc_diagnostics_assert_same( true, false !== strpos( $credential_log_contents, '"httpStatus":400' ), 'The credential endpoint must log its actual REST status.' );
+rtc_diagnostics_assert_same( true, false !== strpos( $credential_log_contents, '"errorCode":"wp_collab_cf_invalid_object"' ), 'The credential endpoint must log its bounded error code.' );
+
+$rtc_credential_logging_filter_value = false;
+file_put_contents( $credential_log_path, '' );
+wp_collab_cf_log_credential_request( 'postType/post', 305806, $credential_result, 23.6 );
+rtc_diagnostics_assert_same( '', file_get_contents( $credential_log_path ), 'The credential logging filter must be able to disable the sink.' );
+$rtc_credential_logging_filter_value = null;
+ini_set( 'error_log', $previous_error_log );
+unlink( $credential_log_path );
 
 class Rtc_Diagnostics_Named_Callback {
 	public function render() {}
@@ -491,5 +599,14 @@ rtc_diagnostics_assert_same( true, false !== strpos( $settings_html, 'name="acti
 rtc_diagnostics_assert_same( true, false !== strpos( $settings_html, 'name="enabled" value="1" checked="checked"' ), 'The enabled site-wide option must render checked.' );
 rtc_diagnostics_assert_same( true, false !== strpos( $settings_html, 'will not render or submit for anyone on this site' ), 'The site-wide safety warning is missing.' );
 rtc_diagnostics_assert_same( true, false !== strpos( $settings_html, 'Settings saved.' ), 'The Settings success notice is missing.' );
+
+$default_logging_output    = array();
+$default_logging_exit_code = null;
+exec(
+	escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' --credential-logging-default-disabled',
+	$default_logging_output,
+	$default_logging_exit_code
+);
+rtc_diagnostics_assert_same( 0, $default_logging_exit_code, 'The isolated default-disabled credential logging contract failed.' );
 
 echo "RTC diagnostics PHP contract passed.\n";

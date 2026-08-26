@@ -3,8 +3,8 @@ export const SESSION_TIMEOUT_CLOSE_CODE = 4001;
 
 const PROTOCOL_ERROR_CLOSE_CODE = 1002;
 const POLICY_VIOLATION_CLOSE_CODE = 1008;
-const BACKGROUND_RETRIES_FAILED_THRESHOLD = 3;
 const CONNECTION_STABLE_RESET_DELAY_MS = 2_000;
+export const CONNECTION_OUTAGE_THRESHOLD_MS = 10_000;
 
 function isTerminalClose( code ) {
 	return [
@@ -21,7 +21,9 @@ function isTerminalClose( code ) {
  * status, and emits no disconnected status when a connection attempt fails
  * before opening. Emit one enriched disconnected status from the close event
  * so Gutenberg can keep ordinary transient retries in the background. The
- * retry delay mirrors y-partyserver's exponential backoff exactly.
+ * retry delay mirrors y-partyserver's exponential backoff exactly. Gutenberg
+ * receives its pause signal only after a continuous ten-second outage, rather
+ * than after a fixed number of fast failures.
  *
  * @param {{
  *   destroy: () => void,
@@ -29,52 +31,103 @@ function isTerminalClose( code ) {
  *   on: (event: string, callback: (value: any) => void) => void,
  *   once: (event: string, callback: (value: any) => void) => void
  * }} provider y-partyserver provider.
+ * @param {{
+ *   clearTimeout?: (timer: any) => void,
+ *   now?: () => number,
+ *   setTimeout?: (callback: () => void, milliseconds: number) => any
+ * }} clock Injectable clock used by deterministic tests.
  * @return {typeof provider} A transparent provider facade with bridged statuses.
  */
-export function createProviderStatusBridge( provider ) {
+export function createProviderStatusBridge( provider, clock = {} ) {
+	const clearScheduledTimeout = clock.clearTimeout || clearTimeout;
+	const now = clock.now || Date.now;
+	const scheduleTimeout = clock.setTimeout || setTimeout;
 	const boundMethods = new Map();
 	const listeners = new Set();
-	let consecutiveFailedRetries = 0;
 	let connectionStableTimer = null;
 	let destroyed = false;
+	let lastRetryDelayMs = null;
+	let outageFailureTimer = null;
+	let outageStartedAt = null;
 	let suppressNextDisconnected = false;
+	const emitStatus = ( status ) => {
+		for ( const listener of [ ...listeners ] ) {
+			listener( status );
+		}
+	};
 	const clearConnectionStableTimer = () => {
 		if ( connectionStableTimer !== null ) {
-			clearTimeout( connectionStableTimer );
+			clearScheduledTimeout( connectionStableTimer );
 			connectionStableTimer = null;
+		}
+	};
+	const clearOutageFailureTimer = () => {
+		if ( outageFailureTimer !== null ) {
+			clearScheduledTimeout( outageFailureTimer );
+			outageFailureTimer = null;
+		}
+	};
+	const resetOutage = () => {
+		clearOutageFailureTimer();
+		lastRetryDelayMs = null;
+		outageStartedAt = null;
+	};
+	const outageElapsedMs = () =>
+		outageStartedAt === null
+			? 0
+			: Math.max( 0, now() - outageStartedAt );
+	const scheduleOutageFailure = () => {
+		outageFailureTimer = scheduleTimeout( () => {
+			outageFailureTimer = null;
+			if (
+				destroyed ||
+				outageStartedAt === null ||
+				provider.wsconnected === true ||
+				lastRetryDelayMs === null
+			) {
+				return;
+			}
+			emitStatus( {
+				status: 'disconnected',
+				willAutoRetryInMs: lastRetryDelayMs,
+				backgroundRetriesFailed: true,
+			} );
+		}, CONNECTION_OUTAGE_THRESHOLD_MS );
+		if ( typeof outageFailureTimer?.unref === 'function' ) {
+			outageFailureTimer.unref();
 		}
 	};
 
 	const onConnectionClose = ( event ) => {
 		const retryable = ! isTerminalClose( event.code );
-		const closedBeforeStable = connectionStableTimer !== null;
 		clearConnectionStableTimer();
-		if (
-			retryable &&
-			( provider.wsconnected === false || closedBeforeStable )
-		) {
-			consecutiveFailedRetries += 1;
-		}
 		const providerFailedRetries =
 			provider.wsUnsuccessfulReconnects +
 			( provider.wsconnected === false ? 1 : 0 );
 		suppressNextDisconnected = provider.wsconnected === true;
-		const status = retryable
-			? {
-					status: 'disconnected',
-					willAutoRetryInMs: Math.min(
-						2 ** providerFailedRetries * 100,
-						provider.maxBackoffTime
-					),
-					backgroundRetriesFailed:
-						consecutiveFailedRetries >=
-						BACKGROUND_RETRIES_FAILED_THRESHOLD,
-			  }
-			: { status: 'disconnected' };
-
-		for ( const listener of [ ...listeners ] ) {
-			listener( status );
+		if ( ! retryable ) {
+			resetOutage();
+			emitStatus( { status: 'disconnected' } );
+			return;
 		}
+
+		const outageJustStarted = outageStartedAt === null;
+		if ( outageJustStarted ) {
+			outageStartedAt = now();
+		}
+		lastRetryDelayMs = Math.min(
+			2 ** providerFailedRetries * 100,
+			provider.maxBackoffTime
+		);
+		if ( outageJustStarted ) {
+			scheduleOutageFailure();
+		}
+		emitStatus( {
+			status: 'disconnected',
+			willAutoRetryInMs: lastRetryDelayMs,
+			backgroundRetriesFailed:
+				outageElapsedMs() >= CONNECTION_OUTAGE_THRESHOLD_MS,
+		} );
 	};
 	const onStatus = ( status ) => {
 		if ( status.status === 'disconnected' && suppressNextDisconnected ) {
@@ -82,15 +135,13 @@ export function createProviderStatusBridge( provider ) {
 			return;
 		}
 
-		for ( const listener of [ ...listeners ] ) {
-			listener( status );
-		}
+		emitStatus( status );
 
 		if ( status.status === 'connected' ) {
 			clearConnectionStableTimer();
-			connectionStableTimer = setTimeout( () => {
-				consecutiveFailedRetries = 0;
+			connectionStableTimer = scheduleTimeout( () => {
 				connectionStableTimer = null;
+				resetOutage();
 			}, CONNECTION_STABLE_RESET_DELAY_MS );
 			suppressNextDisconnected = false;
 		}
@@ -106,6 +157,7 @@ export function createProviderStatusBridge( provider ) {
 			}
 			destroyed = true;
 			clearConnectionStableTimer();
+			resetOutage();
 			provider.off( 'connection-close', onConnectionClose );
 			provider.off( 'status', onStatus );
 			listeners.clear();

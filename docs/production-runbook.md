@@ -187,6 +187,31 @@ WordPress ID/secret while its Worker key remains present.
 
 ## Logs and alerts
 
+### WordPress credential timing
+
+Set `WP_COLLAB_CF_LOG_CREDENTIAL_REQUESTS` to `true` in the private WordPress
+configuration MU-plugin. The plugin then writes one structured record to the
+PHP error log for every `/wp-json/wp-collab-cf/v1/token` callback:
+
+```json
+{"schema":"wp-collab-cf-credential/v1","event":"credential_request","status":"issued","durationMs":24,"httpStatus":200,"siteId":"example-site","blogId":"1","objectType":"postType/post","objectId":"305806","userId":"17"}
+```
+
+Errors use `status: error` and add a bounded `errorCode`. Records never contain
+the credential, signing key, room, content, request body, headers, client IP,
+or raw error message. Disable the constant or return `false` from the
+`wp_collab_cf_log_credential_requests` filter to stop this sink.
+
+These records measure the WordPress callback, including permission checks and
+credential signing. Cookie or nonce failures rejected before the callback are
+visible only in the web server or WordPress REST access logs. Correlate PHP and
+Worker records by timestamp plus site, blog, object, and user IDs; a request
+that has a PHP record but no subsequent Worker open event failed between
+credential issuance and the WebSocket upgrade. Keep this private log's
+retention bounded by the incident-response policy.
+
+### Worker connection lifecycle
+
 The Worker keeps authentication failures and resource-limit events aggregate,
 but emits attributable JSON lifecycle events after authentication succeeds.
 Named staging and production environments set Workers Logs head sampling to

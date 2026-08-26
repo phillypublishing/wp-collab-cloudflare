@@ -92,12 +92,24 @@ define( 'WP_COLLAB_CF_WS_URL', 'wss://wp-collab-cloudflare.your-subdomain.worker
 define( 'WP_COLLAB_CF_SITE_ID', 'YOUR_SITE_ID' );
 define( 'WP_COLLAB_CF_AUTH_SECRET', 'YOUR_SIGNING_SECRET' );
 define( 'WP_COLLAB_CF_AUTH_KEY_ID', '2026-08' ); // For named keys only.
+define( 'WP_COLLAB_CF_LOG_CREDENTIAL_REQUESTS', true ); // Private PHP timing logs.
 ```
+
+Credential logging is opt-in at the plugin level and enabled by the supplied
+MU-plugin template. It writes one bounded JSON record for each credential REST
+callback to the PHP error log. It never records the credential, signing key,
+room, content, request headers, client IP, or raw error message. See the
+[production runbook](docs/production-runbook.md#wordpress-credential-timing)
+for the schema and operational limits.
 
 In Gutenberg 23.8 or newer, enable **Real-Time Collaboration** under
 **Settings > Gutenberg > Experiments**. The experiment is the source of truth;
 the former `WP_ALLOW_COLLABORATION` and `wp_collaboration_enabled` settings no
 longer enable RTC.
+
+Transient WebSocket retries remain invisible to editors for the first ten
+continuous seconds of an outage. A successful connection hides any pause
+immediately and resets the outage after it remains stable for two seconds.
 
 ### 4. Install the Plugin
 

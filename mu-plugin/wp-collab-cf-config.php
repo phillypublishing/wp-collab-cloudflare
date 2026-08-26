@@ -24,6 +24,13 @@ if ( ! defined( 'WP_COLLAB_CF_AUTH_SECRET' ) ) {
 	define( 'WP_COLLAB_CF_AUTH_SECRET', 'replace-me' );
 }
 
+// Write bounded credential endpoint timing records to the private PHP error
+// log. Records contain site/blog/post/user IDs, duration, status, and a stable
+// error code; they never contain credentials, rooms, content, headers, or IPs.
+if ( ! defined( 'WP_COLLAB_CF_LOG_CREDENTIAL_REQUESTS' ) ) {
+	define( 'WP_COLLAB_CF_LOG_CREDENTIAL_REQUESTS', true );
+}
+
 // Optional. Set this when COLLAB_AUTH_KEYS uses a named key for this site.
 // Keep the old key in the Worker keyring until every old grant expires. Live
 // sessions no longer need the signing key after their upgrade is accepted.

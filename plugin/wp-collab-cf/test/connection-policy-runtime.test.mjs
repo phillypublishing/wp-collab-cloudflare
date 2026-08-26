@@ -82,7 +82,7 @@ function createRuntimeProvider() {
 	return { document, provider };
 }
 
-test( 'real y-partyserver retries use the bridged timing, threshold, and reset', async ( t ) => {
+test( 'real y-partyserver retries use bridged timing without an early pause', async ( t ) => {
 	const { document, provider } = createRuntimeProvider();
 	const bridge = createProviderStatusBridge( provider );
 	const disconnected = [];
@@ -118,7 +118,7 @@ test( 'real y-partyserver retries use the bridged timing, threshold, and reset',
 
 	assert.deepEqual(
 		disconnected.map( ( status ) => status.backgroundRetriesFailed ),
-		[ false, false, false, true ]
+		[ false, false, false, false ]
 	);
 
 	socket.open();
@@ -134,7 +134,7 @@ test( 'real y-partyserver retries use the bridged timing, threshold, and reset',
 	);
 } );
 
-test( 'real y-partyserver counts replacement sockets that close before becoming stable', async ( t ) => {
+test( 'rapid replacement socket failures remain background retries', async ( t ) => {
 	const { document, provider } = createRuntimeProvider();
 	const bridge = createProviderStatusBridge( provider );
 	const disconnected = [];
@@ -161,7 +161,7 @@ test( 'real y-partyserver counts replacement sockets that close before becoming 
 
 	assert.deepEqual(
 		disconnected.map( ( status ) => status.backgroundRetriesFailed ),
-		[ false, false, false, true ]
+		[ false, false, false, false ]
 	);
 } );
 
