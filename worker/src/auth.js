@@ -7,12 +7,33 @@ const MAX_TOKEN_LENGTH = 4096;
 const AUTH_PROTOCOL_PREFIX = "wp-collab-token.";
 export const SAFE_PROTOCOL = "wp-collab-v1";
 export const AUTH_EXPIRY_HEADER = "X-WP-Collab-Auth-Expires";
+const AUTH_SITE_HEADER = "X-WP-Collab-Site";
+const AUTH_BLOG_HEADER = "X-WP-Collab-Blog";
+const AUTH_OBJECT_TYPE_HEADER = "X-WP-Collab-Object-Type";
+const AUTH_OBJECT_ID_HEADER = "X-WP-Collab-Object-Id";
+const AUTH_USER_HEADER = "X-WP-Collab-User";
 const SITE_PATTERN = /^[A-Za-z0-9_-]{16,64}$/u;
-const ROOM_PATTERN = /^v1\.([A-Za-z0-9_-]{16,64})\.([1-9][0-9]*)\.[A-Za-z0-9_-]{1,256}\.[A-Za-z0-9_-]{1,256}$/u;
+const ROOM_PATTERN = /^v1\.([A-Za-z0-9_-]{16,64})\.([1-9][0-9]{0,19})\.([A-Za-z0-9_-]{1,256})\.([A-Za-z0-9_-]{1,256})$/u;
+const NUMERIC_ID_PATTERN = /^[1-9][0-9]{0,19}$/u;
+const OBJECT_TYPE_PATTERN = /^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/u;
+const OBJECT_ID_PATTERN = /^(?:[1-9][0-9]{0,19}|collection)$/u;
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{32,128}$/u;
 const KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/u;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
+
+/**
+ * @typedef {{
+ *   claims: Record<string, unknown>,
+ *   identity: {
+ *     siteId: string,
+ *     blogId: string,
+ *     objectType: string,
+ *     objectId: string,
+ *     userId: string
+ *   }
+ * }} VerifiedConnection
+ */
 
 export class AuthError extends Error {
   /**
@@ -190,6 +211,42 @@ function base64UrlDecode(value) {
 }
 
 /**
+ * Decode the operator-facing identifiers carried inside a room name.
+ *
+ * @param {string} room
+ * @returns {{ siteId: string, blogId: string, objectType: string, objectId: string } | null}
+ */
+function parseRoomIdentity(room) {
+  const match = ROOM_PATTERN.exec(room);
+  if (!match) {
+    return null;
+  }
+
+  let objectType;
+  let objectId;
+  try {
+    objectType = textDecoder.decode(base64UrlDecode(match[3]));
+    objectId = textDecoder.decode(base64UrlDecode(match[4]));
+  } catch {
+    return null;
+  }
+  if (
+    !OBJECT_TYPE_PATTERN.test(objectType) ||
+    objectType.length > 128 ||
+    !OBJECT_ID_PATTERN.test(objectId)
+  ) {
+    return null;
+  }
+
+  return {
+    siteId: match[1],
+    blogId: match[2],
+    objectType,
+    objectId,
+  };
+}
+
+/**
  * @param {unknown} value
  * @returns {value is Record<string, unknown>}
  */
@@ -232,7 +289,7 @@ function canonicalOrigin(value) {
  *   }>,
  *   nowSeconds?: number
  * }} options
- * @returns {Promise<Record<string, unknown>>}
+ * @returns {Promise<VerifiedConnection>}
  */
 export async function verifyConnectionRequest({
   request,
@@ -324,9 +381,9 @@ export async function verifyConnectionRequest({
     v !== 1 ||
     aud !== AUDIENCE ||
     typeof blog !== "string" ||
-    !/^[1-9][0-9]*$/u.test(blog) ||
+    !NUMERIC_ID_PATTERN.test(blog) ||
     typeof sub !== "string" ||
-    !sub ||
+    !NUMERIC_ID_PATTERN.test(sub) ||
     typeof iat !== "number" ||
     typeof nbf !== "number" ||
     typeof exp !== "number" ||
@@ -348,11 +405,11 @@ export async function verifyConnectionRequest({
     throw new AuthError(401, "invalid_lifetime");
   }
 
-  const roomMatch = ROOM_PATTERN.exec(room);
+  const roomIdentity = parseRoomIdentity(room);
   if (
-    !roomMatch ||
-    roomMatch[1] !== site ||
-    roomMatch[2] !== blog ||
+    !roomIdentity ||
+    roomIdentity.siteId !== site ||
+    roomIdentity.blogId !== blog ||
     claims.room !== room
   ) {
     throw new AuthError(403, "room_mismatch");
@@ -364,7 +421,13 @@ export async function verifyConnectionRequest({
     throw new AuthError(403, "origin_mismatch");
   }
 
-  return claims;
+  return {
+    claims,
+    identity: {
+      ...roomIdentity,
+      userId: sub,
+    },
+  };
 }
 
 /**
@@ -386,15 +449,21 @@ async function importVerificationKey(authKey) {
 
 /**
  * Remove the credential-bearing subprotocol before PartyServer receives the
- * request, and attach only the verified grant expiry so the Durable Object can
- * reject an upgrade that expired in transit. Established-session lifetime is
- * configured independently by the Durable Object.
+ * request. Attach only the verified grant expiry and bounded operational
+ * identity so the Durable Object can attribute connection lifecycle events.
+ * Established-session lifetime is configured independently by the Durable
+ * Object.
  *
  * @param {Request} request
- * @param {number} expiresAtSeconds
+ * @param {VerifiedConnection} verifiedConnection
  * @returns {Request}
  */
-export function sanitizeAuthenticatedRequest(request, expiresAtSeconds) {
+export function sanitizeAuthenticatedRequest(request, verifiedConnection) {
+  const { claims, identity } = verifiedConnection;
+  if (!Number.isSafeInteger(claims.exp)) {
+    throw new TypeError("Verified collaboration identity is invalid");
+  }
+
   const headers = new Headers(request.headers);
   const protocols = (headers.get("Sec-WebSocket-Protocol") || "")
     .split(",")
@@ -407,8 +476,40 @@ export function sanitizeAuthenticatedRequest(request, expiresAtSeconds) {
   } else {
     headers.delete("Sec-WebSocket-Protocol");
   }
-  headers.set(AUTH_EXPIRY_HEADER, String(expiresAtSeconds));
+  headers.set(AUTH_EXPIRY_HEADER, String(claims.exp));
+  headers.set(AUTH_SITE_HEADER, identity.siteId);
+  headers.set(AUTH_BLOG_HEADER, identity.blogId);
+  headers.set(AUTH_OBJECT_TYPE_HEADER, identity.objectType);
+  headers.set(AUTH_OBJECT_ID_HEADER, identity.objectId);
+  headers.set(AUTH_USER_HEADER, identity.userId);
   return new Request(request, { headers });
+}
+
+/**
+ * Read the bounded identity added only after credential verification.
+ *
+ * @param {Request} request
+ * @returns {{ siteId: string, blogId: string, objectType: string, objectId: string, userId: string } | null}
+ */
+export function getAuthenticatedConnectionIdentity(request) {
+  const identity = {
+    siteId: request.headers.get(AUTH_SITE_HEADER) || "",
+    blogId: request.headers.get(AUTH_BLOG_HEADER) || "",
+    objectType: request.headers.get(AUTH_OBJECT_TYPE_HEADER) || "",
+    objectId: request.headers.get(AUTH_OBJECT_ID_HEADER) || "",
+    userId: request.headers.get(AUTH_USER_HEADER) || "",
+  };
+  if (
+    !SITE_PATTERN.test(identity.siteId) ||
+    !NUMERIC_ID_PATTERN.test(identity.blogId) ||
+    !OBJECT_TYPE_PATTERN.test(identity.objectType) ||
+    identity.objectType.length > 128 ||
+    !OBJECT_ID_PATTERN.test(identity.objectId) ||
+    !NUMERIC_ID_PATTERN.test(identity.userId)
+  ) {
+    return null;
+  }
+  return identity;
 }
 
 /**

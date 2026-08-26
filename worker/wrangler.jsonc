@@ -39,6 +39,10 @@
   "env": {
     "staging": {
       "build": {},
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1
+      },
       "workers_dev": true,
       "preview_urls": false,
       "analytics_engine_datasets": [
@@ -74,6 +78,10 @@
     },
     "production": {
       "build": {},
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1
+      },
       "workers_dev": true,
       "preview_urls": false,
       "analytics_engine_datasets": [
