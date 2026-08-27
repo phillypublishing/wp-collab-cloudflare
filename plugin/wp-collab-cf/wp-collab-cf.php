@@ -2,12 +2,12 @@
 /**
  * Plugin Name: WP Collab Cloudflare
  * Description: Routes Gutenberg real-time collaboration through a Cloudflare Workers relay instead of HTTP polling.
- * Version: 0.5.8
+ * Version: 0.5.9
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WP_COLLAB_CF_VERSION', '0.5.8' );
+define( 'WP_COLLAB_CF_VERSION', '0.5.9' );
 
 require_once __DIR__ . '/includes/compatibility/version-policy.php';
 require_once __DIR__ . '/includes/compatibility/memberpress.php';
@@ -22,6 +22,7 @@ require_once __DIR__ . '/includes/compatibility/meta-box-policy.php';
  *   define( 'WP_COLLAB_CF_SITE_ID', 'YOUR_STABLE_SITE_ID' );
  *   define( 'WP_COLLAB_CF_AUTH_SECRET', 'YOUR_RANDOM_32_PLUS_CHARACTER_SECRET' );
  *   define( 'WP_COLLAB_CF_AUTH_KEY_ID', '2026-08' ); // Optional during keyed rotation.
+ *   define( 'WP_COLLAB_CF_LOG_CREDENTIAL_REQUESTS', true ); // Optional private timing logs.
  */
 
 add_action( 'admin_enqueue_scripts', 'wp_collab_cf_enqueue_scripts', PHP_INT_MAX );
@@ -781,6 +782,123 @@ function wp_collab_cf_issue_credentials( $object_type, $object_id ) {
 }
 
 /**
+ * Return a bounded identifier for a credential log field.
+ *
+ * @param mixed  $value   Candidate identifier.
+ * @param string $pattern Complete validation pattern.
+ * @param int    $maximum Maximum byte length.
+ * @return string|null
+ */
+function wp_collab_cf_bounded_log_identifier( $value, $pattern, $maximum ) {
+	if ( ! is_string( $value ) && ! is_int( $value ) ) {
+		return null;
+	}
+
+	$value = (string) $value;
+	if ( '' === $value || strlen( $value ) > $maximum || ! preg_match( $pattern, $value ) ) {
+		return null;
+	}
+
+	return $value;
+}
+
+/**
+ * Build the private, privacy-bounded credential endpoint timing record.
+ *
+ * Tokens, signing material, rooms, request bodies, error messages, headers,
+ * IP addresses, and content are deliberately absent.
+ *
+ * @param mixed          $object_type Requested sync object type.
+ * @param mixed          $object_id   Requested sync object ID.
+ * @param array|WP_Error $result      Credential result.
+ * @param float|int      $duration_ms Credential issuance duration.
+ * @return array
+ */
+function wp_collab_cf_build_credential_log_record( $object_type, $object_id, $result, $duration_ms ) {
+	$is_error    = is_wp_error( $result );
+	$duration_ms = is_numeric( $duration_ms ) ? (float) $duration_ms : 0;
+	$duration_ms = (int) round( max( 0, min( 86400000, $duration_ms ) ) );
+	$http_status = 200;
+
+	if ( $is_error ) {
+		$error_data = $result->get_error_data();
+		if (
+			is_array( $error_data ) &&
+			isset( $error_data['status'] ) &&
+			is_numeric( $error_data['status'] ) &&
+			(int) $error_data['status'] >= 400 &&
+			(int) $error_data['status'] <= 599
+		) {
+			$http_status = (int) $error_data['status'];
+		} else {
+			$http_status = 500;
+		}
+	}
+
+	$record = array(
+		'schema'     => 'wp-collab-cf-credential/v1',
+		'event'      => 'credential_request',
+		'status'     => $is_error ? 'error' : 'issued',
+		'durationMs' => $duration_ms,
+		'httpStatus' => $http_status,
+		'siteId'     => defined( 'WP_COLLAB_CF_SITE_ID' )
+			? wp_collab_cf_bounded_log_identifier( WP_COLLAB_CF_SITE_ID, '/^[A-Za-z0-9_-]+$/', 64 )
+			: null,
+		'blogId'     => wp_collab_cf_bounded_log_identifier( get_current_blog_id(), '/^[1-9][0-9]{0,19}$/', 20 ),
+		'objectType' => wp_collab_cf_bounded_log_identifier( $object_type, '/^[A-Za-z0-9_\/-]+$/', 100 ),
+		'objectId'   => wp_collab_cf_bounded_log_identifier( $object_id, '/^[1-9][0-9]{0,19}$/', 20 ),
+		'userId'     => wp_collab_cf_bounded_log_identifier( get_current_user_id(), '/^[1-9][0-9]{0,19}$/', 20 ),
+	);
+
+	if ( $is_error ) {
+		$record['errorCode'] = wp_collab_cf_bounded_log_identifier(
+			$result->get_error_code(),
+			'/^[A-Za-z0-9_-]+$/',
+			64
+		) ?? 'unknown_error';
+	}
+
+	return $record;
+}
+
+/**
+ * Return whether private credential timing logs are enabled.
+ *
+ * @return bool
+ */
+function wp_collab_cf_should_log_credential_requests() {
+	$enabled = defined( 'WP_COLLAB_CF_LOG_CREDENTIAL_REQUESTS' )
+		? (bool) WP_COLLAB_CF_LOG_CREDENTIAL_REQUESTS
+		: false;
+
+	return (bool) apply_filters( 'wp_collab_cf_log_credential_requests', $enabled );
+}
+
+/**
+ * Write one private credential endpoint timing record to the PHP error log.
+ *
+ * @param mixed          $object_type Requested sync object type.
+ * @param mixed          $object_id   Requested sync object ID.
+ * @param array|WP_Error $result      Credential result.
+ * @param float|int      $duration_ms Credential issuance duration.
+ * @return bool Whether a record was written.
+ */
+function wp_collab_cf_log_credential_request( $object_type, $object_id, $result, $duration_ms ) {
+	if ( ! wp_collab_cf_should_log_credential_requests() ) {
+		return false;
+	}
+
+	$record = wp_collab_cf_build_credential_log_record( $object_type, $object_id, $result, $duration_ms );
+	$json   = wp_json_encode( $record, JSON_UNESCAPED_SLASHES );
+	if ( false === $json ) {
+		return false;
+	}
+
+	error_log( '[wp-collab-cf] ' . $json );
+	return true;
+}
+
+/**
  * Register the authenticated credential endpoint used by the editor provider.
  */
 function wp_collab_cf_register_rest_routes() {
@@ -869,17 +987,24 @@ function wp_collab_cf_rest_update_meta_box_suppression( WP_REST_Request $request
  * @return WP_REST_Response|WP_Error
  */
 function wp_collab_cf_rest_issue_credentials( WP_REST_Request $request ) {
+	$started_at  = microtime( true );
 	$json_params = $request->get_json_params();
+	$object_type = $request->get_param( 'objectType' );
+	$object_id   = $request->get_param( 'objectId' );
 	if (
-		null === $request->get_param( 'objectId' ) &&
+		null === $object_id &&
 		( ! is_array( $json_params ) || ! array_key_exists( 'objectId', $json_params ) )
 	) {
-		return new WP_Error( 'wp_collab_cf_invalid_object', 'This collaboration object is not supported.', array( 'status' => 400 ) );
+		$credentials = new WP_Error( 'wp_collab_cf_invalid_object', 'This collaboration object is not supported.', array( 'status' => 400 ) );
+	} else {
+		$credentials = wp_collab_cf_issue_credentials( $object_type, $object_id );
 	}
 
-	$credentials = wp_collab_cf_issue_credentials(
-		$request->get_param( 'objectType' ),
-		$request->get_param( 'objectId' )
+	wp_collab_cf_log_credential_request(
+		$object_type,
+		$object_id,
+		$credentials,
+		( microtime( true ) - $started_at ) * 1000
 	);
 	if ( is_wp_error( $credentials ) ) {
 		return $credentials;

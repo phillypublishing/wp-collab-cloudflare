@@ -3,9 +3,48 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 
 import {
+	CONNECTION_OUTAGE_THRESHOLD_MS,
 	createProviderStatusBridge,
 	handleConnectionClose,
 } from '../src/connection-policy.mjs';
+
+function createClock() {
+	let currentTime = 0;
+	let nextTimerId = 1;
+	const timers = new Map();
+
+	const runDueTimers = () => {
+		while ( true ) {
+			const dueTimers = [ ...timers.entries() ]
+				.filter( ( [ , timer ] ) => timer.dueAt <= currentTime )
+				.sort( ( left, right ) => left[ 1 ].dueAt - right[ 1 ].dueAt );
+			if ( dueTimers.length === 0 ) {
+				return;
+			}
+			const [ timerId, timer ] = dueTimers[ 0 ];
+			timers.delete( timerId );
+			timer.callback();
+		}
+	};
+
+	return {
+		advance: ( milliseconds ) => {
+			currentTime += milliseconds;
+			runDueTimers();
+		},
+		clearTimeout: ( timerId ) => timers.delete( timerId ),
+		now: () => currentTime,
+		setTimeout: ( callback, milliseconds ) => {
+			const timerId = nextTimerId;
+			nextTimerId += 1;
+			timers.set( timerId, {
+				callback,
+				dueAt: currentTime + milliseconds,
+			} );
+			return timerId;
+		},
+	};
+}
 
 function createProviderDouble() {
 	const listeners = new Map();
@@ -139,9 +178,10 @@ test( 'session timeout reports an automatic retry until reconnected', () => {
 	assert.equal( provider.destroyCount(), 1 );
 } );
 
-test( 'generic transient closes report exact provider retry timing and threshold', () => {
+test( 'generic transient closes wait for a continuous outage before pausing', () => {
 	const provider = createProviderDouble();
-	const bridge = createProviderStatusBridge( provider );
+	const clock = createClock();
+	const bridge = createProviderStatusBridge( provider, clock );
 	const statuses = [];
 	bridge.on( 'status', ( status ) => statuses.push( status ) );
 
@@ -151,47 +191,46 @@ test( 'generic transient closes report exact provider retry timing and threshold
 	for ( const unsuccessfulReconnects of [ 0, 1, 2 ] ) {
 		provider.wsUnsuccessfulReconnects = unsuccessfulReconnects;
 		provider.emit( 'connection-close', [ { code: 1006 } ] );
+		clock.advance( 100 );
 	}
 
-	assert.deepEqual( statuses, [
-		{
-			status: 'disconnected',
-			willAutoRetryInMs: 100,
-			backgroundRetriesFailed: false,
-		},
-		{
-			status: 'disconnected',
-			willAutoRetryInMs: 200,
-			backgroundRetriesFailed: false,
-		},
-		{
-			status: 'disconnected',
-			willAutoRetryInMs: 400,
-			backgroundRetriesFailed: false,
-		},
-		{
-			status: 'disconnected',
-			willAutoRetryInMs: 800,
-			backgroundRetriesFailed: true,
-		},
-	] );
+	assert.equal( CONNECTION_OUTAGE_THRESHOLD_MS, 10_000 );
+	assert.deepEqual(
+		statuses.map( ( status ) => status.backgroundRetriesFailed ),
+		[ false, false, false, false ]
+	);
+	assert.deepEqual(
+		statuses.map( ( status ) => status.willAutoRetryInMs ),
+		[ 100, 200, 400, 800 ]
+	);
+
+	clock.advance( CONNECTION_OUTAGE_THRESHOLD_MS - clock.now() - 1 );
+	assert.equal( statuses.length, 4 );
+	clock.advance( 1 );
+	assert.deepEqual( statuses.at( -1 ), {
+		status: 'disconnected',
+		willAutoRetryInMs: 800,
+		backgroundRetriesFailed: true,
+	} );
+	bridge.destroy();
 } );
 
-test( 'a stable reconnect resets the generic retry failure count', async () => {
+test( 'a stable reconnect resets the elapsed outage', () => {
 	const provider = createProviderDouble();
-	const bridge = createProviderStatusBridge( provider );
+	const clock = createClock();
+	const bridge = createProviderStatusBridge( provider, clock );
 	const statuses = [];
 	bridge.on( 'status', ( status ) => statuses.push( status ) );
 
 	provider.wsconnected = false;
-	for ( const unsuccessfulReconnects of [ 0, 1, 2 ] ) {
-		provider.wsUnsuccessfulReconnects = unsuccessfulReconnects;
-		provider.emit( 'connection-close', [ { code: 1006 } ] );
-	}
+	provider.emit( 'connection-close', [ { code: 1006 } ] );
+	clock.advance( CONNECTION_OUTAGE_THRESHOLD_MS );
+	assert.equal( statuses.at( -1 ).backgroundRetriesFailed, true );
+
 	provider.wsconnected = true;
 	provider.wsUnsuccessfulReconnects = 0;
 	provider.emit( 'status', [ { status: 'connected' } ] );
-	await delay( 2_050 );
+	clock.advance( 2_000 );
 	provider.emit( 'connection-close', [ { code: 1006 } ] );
 
 	assert.deepEqual( statuses.at( -1 ), {
@@ -199,6 +238,56 @@ test( 'a stable reconnect resets the generic retry failure count', async () => {
 		willAutoRetryInMs: 100,
 		backgroundRetriesFailed: false,
 	} );
+	bridge.destroy();
+} );
+
+test( 'a short reconnect preserves the original outage deadline', () => {
+	const provider = createProviderDouble();
+	const clock = createClock();
+	const bridge = createProviderStatusBridge( provider, clock );
+	const statuses = [];
+	bridge.on( 'status', ( status ) => statuses.push( status ) );
+
+	provider.wsconnected = false;
+	provider.emit( 'connection-close', [ { code: 1006 } ] );
+	clock.advance( 9_000 );
+
+	provider.wsconnected = true;
+	provider.emit( 'status', [ { status: 'connected' } ] );
+	clock.advance( 500 );
+	provider.wsconnected = false;
+	provider.emit( 'connection-close', [ { code: 1006 } ] );
+
+	assert.equal( statuses.at( -1 ).backgroundRetriesFailed, false );
+	clock.advance( 500 );
+	assert.deepEqual( statuses.at( -1 ), {
+		status: 'disconnected',
+		willAutoRetryInMs: 200,
+		backgroundRetriesFailed: true,
+	} );
+	bridge.destroy();
+} );
+
+test( 'a terminal close cancels a pending outage deadline', () => {
+	const provider = createProviderDouble();
+	const clock = createClock();
+	const bridge = createProviderStatusBridge( provider, clock );
+	const statuses = [];
+	bridge.on( 'status', ( status ) => statuses.push( status ) );
+
+	provider.wsconnected = false;
+	provider.emit( 'connection-close', [ { code: 1006 } ] );
+	provider.emit( 'connection-close', [ { code: 4008 } ] );
+	clock.advance( CONNECTION_OUTAGE_THRESHOLD_MS );
+
+	assert.deepEqual( statuses, [
+		{
+			status: 'disconnected',
+			willAutoRetryInMs: 200,
+			backgroundRetriesFailed: false,
+		},
+		{ status: 'disconnected' },
+	] );
 	bridge.destroy();
 } );
 
