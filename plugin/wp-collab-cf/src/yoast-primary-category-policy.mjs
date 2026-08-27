@@ -60,11 +60,11 @@ export function shouldShowPrimaryCategorySelector( selectedCategoryIds ) {
 }
 
 /**
- * Decide whether a category-list change invalidated a stored primary value.
+ * Decide whether a category-list change requires an explicit primary value.
  *
  * The bridge must not write on mount or in response to a meta-only peer edit.
- * An empty value is Yoast's valid implicit-first-category state, so it remains
- * untouched until the editor explicitly chooses a primary category.
+ * When the category list changes, match Yoast by persisting the first selected
+ * category if the stored value is empty or no longer selected.
  *
  * @param {number[]|null} previousCategoryIds Previously observed categories.
  * @param {number[]|null} selectedCategoryIds Current categories.
@@ -97,7 +97,6 @@ export function shouldReconcilePrimaryCategory(
 
 	return (
 		categoriesChanged &&
-		currentValue !== '' &&
 		currentValue !== normalizedPrimary
 	);
 }

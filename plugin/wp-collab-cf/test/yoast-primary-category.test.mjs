@@ -32,11 +32,16 @@ test( 'shows the picker only when there is a meaningful choice', () => {
 	assert.equal( shouldShowPrimaryCategorySelector( [ 12, 34 ] ), true );
 } );
 
-test( 'reconciles only after a category-list change invalidates stored meta', () => {
+test( 'persists the effective primary only after the category list changes', () => {
 	assert.equal(
 		shouldReconcilePrimaryCategory( null, [ 12 ], '34', '12' ),
 		false,
 		'mount must not dirty the post'
+	);
+	assert.equal(
+		shouldReconcilePrimaryCategory( [ 12, 34 ], [ 12, 34 ], '', '12' ),
+		false,
+		'unchanged categories must not turn an implicit primary into a write'
 	);
 	assert.equal(
 		shouldReconcilePrimaryCategory( [ 12 ], [ 12 ], '34', '12' ),
@@ -49,9 +54,9 @@ test( 'reconciles only after a category-list change invalidates stored meta', ()
 		'removing the stored primary must choose a deterministic fallback'
 	);
 	assert.equal(
-		shouldReconcilePrimaryCategory( [ 12, 34 ], [ 12 ], '', '12' ),
-		false,
-		'Yoast\'s implicit primary state must remain empty'
+		shouldReconcilePrimaryCategory( [ 12 ], [ 12, 34 ], '', '12' ),
+		true,
+		'selecting categories must persist Yoast\'s first-category default'
 	);
 } );
 
