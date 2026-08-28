@@ -41,6 +41,11 @@ $compat_policy_filter_calls = 0;
 $compat_registered_post_meta = array();
 $compat_edit_post_permissions = array();
 $compat_user_edit_post_permissions = array();
+$compat_yoast_reindexed_post_ids = array();
+$compat_yoast_requested_classes = array();
+$compat_yoast_service_mode = 'valid';
+$compat_policy_contexts = array();
+$compat_policy_filter_mode = 'valid';
 
 function add_action( $hook, $callback, $priority = 10, $accepted_args = 1 ) {
 	global $compat_actions;
@@ -221,19 +226,72 @@ class Compat_REST_Response {
 	}
 }
 
-class Compat_Screen {
-	public $id = 'post';
-	public $post_type = 'post';
+class Compat_REST_Request {
+	private $params;
+
+	public function __construct( $params = array() ) {
+		$this->params = $params;
+	}
+
+	public function has_param( $key ) {
+		return array_key_exists( $key, $this->params );
+	}
+}
+
+class Compat_Yoast_Indexable_Post_Watcher {
+	public function build_indexable( $post_id ) {
+		global $compat_yoast_reindexed_post_ids, $compat_yoast_service_mode;
+		if ( 'throw_build' === $compat_yoast_service_mode ) {
+			throw new RuntimeException( 'Yoast watcher unavailable.' );
+		}
+		$compat_yoast_reindexed_post_ids[] = $post_id;
+	}
+}
+
+class Compat_Yoast_Classes_Surface {
+	public function get( $class_name ) {
+		global $compat_yoast_requested_classes, $compat_yoast_service_mode;
+		$compat_yoast_requested_classes[] = $class_name;
+		if ( 'Yoast\\WP\\SEO\\Integrations\\Watchers\\Indexable_Post_Watcher' !== $class_name ) {
+			throw new RuntimeException( 'Unexpected Yoast service.' );
+		}
+		if ( 'throw_get' === $compat_yoast_service_mode ) {
+			throw new RuntimeException( 'Yoast container unavailable.' );
+		}
+		if ( 'missing_method' === $compat_yoast_service_mode ) {
+			return new stdClass();
+		}
+		return new Compat_Yoast_Indexable_Post_Watcher();
+	}
+}
+
+function YoastSEO() {
+	return (object) array(
+		'classes' => new Compat_Yoast_Classes_Surface(),
+	);
+}
+
+class WP_Screen {
+	public $id;
+	public $post_type;
 	private $block_editor;
 
-	public function __construct( $block_editor = true ) {
+	public function __construct( $block_editor = true, $post_type = 'post' ) {
 		$this->block_editor = $block_editor;
+		$this->id = $post_type;
+		$this->post_type = $post_type;
+	}
+
+	public static function get( $post_type = 'post' ) {
+		return new static( true, $post_type );
 	}
 
 	public function is_block_editor() {
 		return $this->block_editor;
 	}
 }
+
+class Compat_Screen extends WP_Screen {}
 
 class MeprAppCtrl {
 	public function unauthorized_meta_box() {}
@@ -329,6 +387,8 @@ compat_assert_same( false, isset( $compat_actions['wp_print_footer_scripts'] ), 
 compat_assert_same( false, isset( $compat_actions['wp_print_styles'] ), 'The admin adapter must not register a front-end style seam.' );
 do_action( 'init' );
 compat_assert_true( isset( $compat_filters['wpseo_enable_editor_features_post'][ PHP_INT_MAX ] ), 'The owner filter must be registered at init before post meta boxes and admin enqueue run.' );
+compat_assert_true( isset( $compat_actions['rest_after_insert_post'][ PHP_INT_MAX ] ), 'The featured-image bridge must follow REST saves for posts.' );
+compat_assert_true( isset( $compat_actions['rest_after_insert_page'][ PHP_INT_MAX ] ), 'The featured-image bridge must cover every post type whose Yoast editor can be suppressed.' );
 compat_assert_true(
 	isset( $compat_registered_post_meta['post'][ WP_COLLAB_CF_YOAST_PRIMARY_CATEGORY_META_KEY ] ),
 	'The RTC bridge must register Yoast primary category meta for the post REST response.'
@@ -551,15 +611,99 @@ compat_assert_same(
 
 add_filter(
 	'wp_collab_cf_suppressed_meta_box_ids',
-	function () {
-		global $compat_policy_filter_calls, $compat_policy_ids;
+	function ( $ids, WP_Screen $screen, WP_Post $context_post ) {
+		global $compat_policy_filter_calls, $compat_policy_ids, $compat_policy_contexts, $compat_policy_filter_mode;
 		++$compat_policy_filter_calls;
+		$compat_policy_contexts[] = array( $screen->id, $context_post->ID );
+		if ( 'throw' === $compat_policy_filter_mode ) {
+			throw new RuntimeException( 'Suppression policy unavailable.' );
+		}
 		return $compat_policy_ids;
 	},
 	10,
 	3
 );
 
+$compat_policy_ids = array( 'wpseo_meta' );
+$compat_policy_filter_calls = 0;
+$compat_yoast_reindexed_post_ids = array();
+$compat_yoast_requested_classes = array();
+$compat_policy_contexts = array();
+$current_screen = new Compat_Screen( true, 'page' );
+$post = new WP_Post( 99, 'page', 'safe' );
+do_action(
+	'rest_after_insert_post',
+	new WP_Post( 42, 'post', 'safe' ),
+	new Compat_REST_Request( array( 'featured_media' => 73 ) ),
+	false
+);
+compat_assert_same( array( 42 ), $compat_yoast_reindexed_post_ids, 'A REST featured-image change must rebuild the Yoast indexable after WordPress applies featured_media.' );
+compat_assert_same( array( array( 'post', 42 ) ), $compat_policy_contexts, 'The REST bridge must evaluate the suppression policy with the saved post and its editor screen.' );
+compat_assert_same(
+	array( 'Yoast\\WP\\SEO\\Integrations\\Watchers\\Indexable_Post_Watcher' ),
+	$compat_yoast_requested_classes,
+	'The featured-image bridge must reuse Yoast\'s own post watcher.'
+);
+$current_screen = new Compat_Screen( true );
+$post = new WP_Post( 42, 'post', 'safe' );
+do_action(
+	'rest_after_insert_post',
+	new WP_Post( 42, 'post', 'safe' ),
+	new Compat_REST_Request( array( 'featured_media' => 0 ) ),
+	false
+);
+compat_assert_same( array( 42, 42 ), $compat_yoast_reindexed_post_ids, 'Removing a REST featured image must rebuild Yoast so the stale og:image is cleared.' );
+do_action(
+	'rest_after_insert_post',
+	new WP_Post( 42, 'post', 'safe' ),
+	new Compat_REST_Request(),
+	false
+);
+compat_assert_same( array( 42, 42 ), $compat_yoast_reindexed_post_ids, 'A REST save without featured_media must not perform a duplicate Yoast rebuild.' );
+$compat_options['wp_collab_cf_meta_box_suppression_enabled'] = false;
+do_action(
+	'rest_after_insert_post',
+	new WP_Post( 42, 'post', 'safe' ),
+	new Compat_REST_Request( array( 'featured_media' => 0 ) ),
+	false
+);
+compat_assert_same( array( 42, 42 ), $compat_yoast_reindexed_post_ids, 'A disabled site policy must not alter Yoast indexables.' );
+$compat_options['wp_collab_cf_meta_box_suppression_enabled'] = true;
+$compat_policy_ids = array();
+do_action(
+	'rest_after_insert_post',
+	new WP_Post( 42, 'post', 'safe' ),
+	new Compat_REST_Request( array( 'featured_media' => 73 ) ),
+	false
+);
+compat_assert_same( array( 42, 42 ), $compat_yoast_reindexed_post_ids, 'An unconfigured Yoast adapter must not alter Yoast indexables.' );
+$compat_policy_ids = array( 'wpseo_meta' );
+foreach ( array( 'throw_get', 'missing_method', 'throw_build' ) as $compat_yoast_service_mode ) {
+	do_action(
+		'rest_after_insert_post',
+		new WP_Post( 42, 'post', 'safe' ),
+		new Compat_REST_Request( array( 'featured_media' => 73 ) ),
+		false
+	);
+}
+compat_assert_same( array( 42, 42 ), $compat_yoast_reindexed_post_ids, 'Unavailable Yoast internals must fail closed without reporting a rebuild.' );
+$compat_yoast_service_mode = 'valid';
+$compat_policy_filter_mode = 'throw';
+do_action(
+	'rest_after_insert_post',
+	new WP_Post( 42, 'post', 'safe' ),
+	new Compat_REST_Request( array( 'featured_media' => 73 ) ),
+	false
+);
+compat_assert_same( array( 42, 42 ), $compat_yoast_reindexed_post_ids, 'A failing suppression-policy filter must not fail the REST save or report a rebuild.' );
+$compat_policy_filter_mode = 'valid';
+do_action(
+	'rest_after_insert_page',
+	new WP_Post( 43, 'page', 'safe' ),
+	new Compat_REST_Request( array( 'featured_media' => 74 ) ),
+	false
+);
+compat_assert_same( array( 42, 42, 43 ), $compat_yoast_reindexed_post_ids, 'Every suppressed REST post type must rebuild after a featured-image change.' );
 $compat_policy_ids = array( 'wpseo_meta' );
 $compat_policy_filter_calls = 0;
 $current_screen = new Compat_Screen( false );
