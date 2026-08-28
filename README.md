@@ -193,6 +193,9 @@ add_filter(
 );
 ```
 
+Compatibility adapters may evaluate this filter during a REST save. Use the
+supplied screen and post arguments for context instead of request globals.
+
 Two configured IDs use minimum-version compatibility adapters instead of the
 generic late registry removal:
 

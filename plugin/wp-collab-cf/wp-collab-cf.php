@@ -40,16 +40,25 @@ add_action( 'admin_footer-post-new.php', 'wp_collab_cf_print_diagnostics_data', 
  * Any malformed filter result invalidates the complete policy. IDs are exact,
  * case-sensitive strings; no wildcard or fuzzy matching is performed.
  *
+ * @param WP_Screen|null $screen_context Screen supplied to policy filters. Defaults to the current screen.
+ * @param WP_Post|null   $post_context   Post supplied to policy filters. Defaults to the current post.
  * @return array Policy IDs and an optional diagnostic warning.
  */
-function wp_collab_cf_get_suppressed_meta_box_ids() {
+function wp_collab_cf_get_suppressed_meta_box_ids( $screen_context = null, $post_context = null ) {
 	global $current_screen, $post;
+
+	if ( null === $screen_context ) {
+		$screen_context = $current_screen;
+	}
+	if ( null === $post_context ) {
+		$post_context = $post;
+	}
 
 	$configured = apply_filters(
 		'wp_collab_cf_suppressed_meta_box_ids',
 		array(),
-		$current_screen,
-		$post
+		$screen_context,
+		$post_context
 	);
 	if ( ! is_array( $configured ) ) {
 		return array(

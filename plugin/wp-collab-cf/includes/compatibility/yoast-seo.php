@@ -128,6 +128,91 @@ function wp_collab_cf_yoast_hide_primary_category_meta( $response, $post ) {
 }
 
 /**
+ * Rebuild Yoast's indexable after REST applies a featured-image change.
+ *
+ * WordPress updates the post, and therefore fires Yoast's wp_insert_post
+ * watcher, before the REST controller applies featured_media. With Yoast's
+ * editor assets suppressed, no later Yoast meta write is guaranteed to queue a
+ * second build, so the indexable can retain the first content image instead.
+ *
+ * @param WP_Post         $post    Inserted or updated post.
+ * @param WP_REST_Request $request Full REST request.
+ * @return bool Whether the Yoast indexable rebuild ran.
+ */
+function wp_collab_cf_yoast_rebuild_after_featured_media( $post, $request ) {
+	if (
+		! is_object( $post ) ||
+		! isset( $post->ID ) ||
+		(int) $post->ID <= 0 ||
+		! is_object( $request ) ||
+		! is_callable( array( $request, 'has_param' ) ) ||
+		! $request->has_param( 'featured_media' )
+	) {
+		return false;
+	}
+
+	if (
+		! wp_collab_cf_is_meta_box_suppression_enabled() ||
+		! defined( 'WPSEO_VERSION' ) ||
+		! defined( 'WPSEO_PREMIUM_VERSION' ) ||
+		! wp_collab_cf_yoast_versions_supported( WPSEO_VERSION, WPSEO_PREMIUM_VERSION ) ||
+		! function_exists( 'YoastSEO' )
+	) {
+		return false;
+	}
+
+	try {
+		if ( ! class_exists( 'WP_Screen' ) ) {
+			$screen_class = ABSPATH . 'wp-admin/includes/class-wp-screen.php';
+			if ( ! is_readable( $screen_class ) ) {
+				return false;
+			}
+			require_once $screen_class;
+		}
+		if ( ! function_exists( 'get_current_screen' ) ) {
+			$screen_functions = ABSPATH . 'wp-admin/includes/screen.php';
+			if ( ! is_readable( $screen_functions ) ) {
+				return false;
+			}
+			require_once $screen_functions;
+		}
+		if ( ! is_callable( array( 'WP_Screen', 'get' ) ) || ! isset( $post->post_type ) ) {
+			return false;
+		}
+
+		$screen = WP_Screen::get( $post->post_type );
+		if ( ! $screen instanceof WP_Screen ) {
+			return false;
+		}
+
+		$policy = wp_collab_cf_get_suppressed_meta_box_ids( $screen, $post );
+		if ( null !== $policy['warning'] || ! in_array( 'wpseo_meta', $policy['ids'], true ) ) {
+			return false;
+		}
+
+		$yoast = YoastSEO();
+		if ( ! is_object( $yoast ) || ! isset( $yoast->classes ) ) {
+			return false;
+		}
+
+		$classes = $yoast->classes;
+		if ( ! is_object( $classes ) || ! is_callable( array( $classes, 'get' ) ) ) {
+			return false;
+		}
+
+		$watcher = $classes->get( 'Yoast\\WP\\SEO\\Integrations\\Watchers\\Indexable_Post_Watcher' );
+		if ( ! is_object( $watcher ) || ! is_callable( array( $watcher, 'build_indexable' ) ) ) {
+			return false;
+		}
+
+		$watcher->build_indexable( (int) $post->ID );
+		return true;
+	} catch ( Throwable $error ) {
+		return false;
+	}
+}
+
+/**
  * Return the browser configuration for the RTC-safe Primary Category bridge.
  *
  * @return array Sanitized editor configuration.
@@ -936,6 +1021,7 @@ function wp_collab_cf_yoast_register_post_type_filter( $post_type ) {
 	}
 
 	add_filter( 'wpseo_enable_editor_features_' . $post_type, 'wp_collab_cf_yoast_filter_editor_features', PHP_INT_MAX );
+	add_action( 'rest_after_insert_' . $post_type, 'wp_collab_cf_yoast_rebuild_after_featured_media', PHP_INT_MAX, 2 );
 	$wp_collab_cf_yoast_registered_post_type_filters[ $post_type ] = true;
 }
 
