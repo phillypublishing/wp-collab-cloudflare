@@ -18,6 +18,7 @@ const room = `v1.${site}.1.cG9zdFR5cGUvcG9zdA.MTIz`;
 const origin = "https://wordpress.example.test";
 const secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const nowSeconds = 1_800_000_000;
+const connectionTelemetryId = "123e4567-e89b-42d3-a456-426614174000";
 
 function base64UrlEncode(bytes) {
   return Buffer.from(bytes).toString("base64url");
@@ -426,9 +427,14 @@ test("strips the credential and forwards only verified operational identity inte
   const spoofedHeaders = new Headers(request.headers);
   spoofedHeaders.set("X-WP-Collab-User", "999");
   spoofedHeaders.set("X-WP-Collab-Object-Id", "999");
+  spoofedHeaders.set(
+    "X-WP-Collab-Connection-Id",
+    "attacker-controlled-connection"
+  );
   const sanitized = sanitizeAuthenticatedRequest(
     new Request(request, { headers: spoofedHeaders }),
-    verifiedConnection
+    verifiedConnection,
+    connectionTelemetryId
   );
 
   assert.equal(sanitized.url, request.url);
@@ -446,6 +452,7 @@ test("strips the credential and forwards only verified operational identity inte
     objectType: "postType/post",
     objectId: "123",
     userId: "7",
+    connectionId: connectionTelemetryId,
   });
   assert.equal(new URL(sanitized.url).pathname.endsWith(room), true);
 });
@@ -458,13 +465,18 @@ test("rejects missing or malformed internal connection identity", async () => {
     authKeys: { [site]: secret },
     nowSeconds,
   });
-  const sanitized = sanitizeAuthenticatedRequest(request, verifiedConnection);
+  const sanitized = sanitizeAuthenticatedRequest(
+    request,
+    verifiedConnection,
+    connectionTelemetryId
+  );
   const identityHeaders = [
     "X-WP-Collab-Site",
     "X-WP-Collab-Blog",
     "X-WP-Collab-Object-Type",
     "X-WP-Collab-Object-Id",
     "X-WP-Collab-User",
+    "X-WP-Collab-Connection-Id",
   ];
 
   for (const header of identityHeaders) {
@@ -560,7 +572,8 @@ test("computes the remaining connection-grant validity", () => {
         objectId: "123",
         userId: "7",
       },
-    }
+    },
+    connectionTelemetryId
   );
   assert.equal(getAuthExpiryDelay(request, nowSeconds * 1000), 60_000);
   assert.equal(

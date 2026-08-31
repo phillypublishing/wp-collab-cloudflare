@@ -65,8 +65,17 @@ test("the default Worker environment cannot be deployed", async () => {
   }
 
   assert.notEqual(blocked.status, 0);
+
+  // Wrangler 4.80 no longer forwards custom-build stderr to the parent
+  // process. Invoke the configured guard directly while the Wrangler call
+  // above proves the deployment remains blocked.
+  const blockedByGuard = spawnSync(process.execPath, [deploymentGuard], {
+    encoding: "utf8",
+    env: environment,
+  });
+  assert.notEqual(blockedByGuard.status, 0);
   assert.match(
-    `${blocked.stdout}\n${blocked.stderr}`,
+    await readFile(deploymentGuard, "utf8"),
     /Default Worker deployments are disabled/u
   );
 
@@ -106,13 +115,25 @@ test("named deployments bind isolated Analytics Engine datasets", async () => {
   );
 });
 
-test("named deployments retain every attributable connection lifecycle log", async () => {
+test("deployments retain custom lifecycle logs without automatic request logs", async () => {
   const config = await wranglerConfig;
 
+  for (const observability of [
+    config.observability,
+    config.env.staging.observability,
+    config.env.production.observability,
+  ]) {
+    assert.deepEqual(observability.logs, {
+      invocation_logs: false,
+    });
+  }
   for (const environment of ["staging", "production"]) {
     assert.deepEqual(config.env[environment].observability, {
       enabled: true,
       head_sampling_rate: 1,
+      logs: {
+        invocation_logs: false,
+      },
     });
   }
 });

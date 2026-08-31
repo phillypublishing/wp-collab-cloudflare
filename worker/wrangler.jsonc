@@ -10,7 +10,10 @@
   "compatibility_date": "2025-04-01",
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 0.1
+    "head_sampling_rate": 0.1,
+    "logs": {
+      "invocation_logs": false
+    }
   },
   "vars": {
     "COLLAB_MAX_CONNECTIONS_PER_ROOM": "20",
@@ -41,7 +44,10 @@
       "build": {},
       "observability": {
         "enabled": true,
-        "head_sampling_rate": 1
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
       },
       "workers_dev": true,
       "preview_urls": false,
@@ -80,7 +86,10 @@
       "build": {},
       "observability": {
         "enabled": true,
-        "head_sampling_rate": 1
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
       },
       "workers_dev": true,
       "preview_urls": false,

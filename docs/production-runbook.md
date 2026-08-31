@@ -205,23 +205,32 @@ or raw error message. Disable the constant or return `false` from the
 These records measure the WordPress callback, including permission checks and
 credential signing. Cookie or nonce failures rejected before the callback are
 visible only in the web server or WordPress REST access logs. Correlate PHP and
-Worker records by timestamp plus site, blog, object, and user IDs; a request
-that has a PHP record but no subsequent Worker open event failed between
-credential issuance and the WebSocket upgrade. Keep this private log's
-retention bounded by the incident-response policy.
+Worker records by timestamp plus site, blog, object, and user IDs. A PHP record
+without a subsequent `connection_authenticated` event failed before Worker
+authentication completed. An authenticated event without a matching open event
+reached the edge successfully but failed before Durable Object connection setup
+and open telemetry completed. Keep this private log's retention bounded by the
+incident-response policy.
 
 ### Worker connection lifecycle
 
 The Worker keeps authentication failures and resource-limit events aggregate,
 but emits attributable JSON lifecycle events after authentication succeeds.
 Named staging and production environments set Workers Logs head sampling to
-`1`, so an individual open, close, or runtime error is not intentionally
-discarded before ingestion.
+`1`, so an individual authenticated, open, close, or runtime-error event is not
+intentionally discarded before ingestion. Automatic invocation logs are
+disabled in every environment; the bounded custom JSON events remain enabled.
 
-`connection_opened`, `connection_closed`, and `connection_error` contain the
-verified site ID, blog ID, object type, object/post ID, WordPress user ID, room,
-server-generated connection correlation ID, connection duration, and room
-connection count.
+`connection_authenticated` is emitted after credential and Origin verification
+but before Durable Object routing. It contains the same verified identity and
+server-generated connection correlation ID used by subsequent lifecycle events
+once the Durable Object stores the verified identity. The shared ID identifies
+whether an authenticated request completed Durable Object connection setup
+without exposing the bearer credential.
+
+These events contain the verified site ID, blog ID, object type, object/post ID,
+WordPress user ID, room, server-generated connection correlation ID, connection
+duration, and room connection count.
 Close events also include the numeric close code, a bounded status, and
 `wasClean`. The Worker never logs the bearer token, signing key, request
 headers, Origin, document content, Yjs messages, raw exception text, or raw
@@ -250,7 +259,7 @@ events extend it with reviewed, bounded operational identifiers:
 | Column | Meaning |
 | --- | --- |
 | `index1` | Constant `wp-collab-cloudflare` for aggregate events; server-generated connection correlation ID for lifecycle events |
-| `blob1` | Allowlisted event, including `connection_opened`, `connection_closed`, and `connection_error` |
+| `blob1` | Allowlisted event, including `connection_authenticated`, `connection_opened`, `connection_closed`, and `connection_error` |
 | `blob2` | Allowlisted status or rejection/limit code |
 | `blob3` | Verified site ID for lifecycle events |
 | `blob4` | Verified WordPress blog ID for lifecycle events |
@@ -322,7 +331,7 @@ SELECT
   double7 AS room_connection_count
 FROM wp_collab_cloudflare_production
 WHERE timestamp > NOW() - INTERVAL '1' HOUR
-  AND blob1 IN ('connection_opened', 'connection_closed', 'connection_error')
+  AND blob1 IN ('connection_authenticated', 'connection_opened', 'connection_closed', 'connection_error')
   AND blob6 = '305806'
 ORDER BY timestamp ASC
 ```
@@ -352,11 +361,14 @@ HAVING event_count > 0
 ```
 
 Use the baseline to add burst alerts for connection/message/update/rate-limit
-events. Dashboard request logs,
-Logpush, traces, proxies, and SIEM pipelines must not record
-`Sec-WebSocket-Protocol`: it temporarily contains the bearer credential at the
-edge even though the Worker strips it before Durable Object routing. Keep log
-retention no longer than the incident-response policy requires.
+events. `wrangler.jsonc` sets `observability.logs.invocation_logs` to `false`
+because automatic request records can capture `Sec-WebSocket-Protocol`, which
+temporarily contains the bearer credential at the edge. Keep that setting on
+every environment. Logpush, traces, proxies, SIEM pipelines, and any separately
+enabled request-log product must also exclude that header. The Worker's bounded
+custom events remain available for incident diagnosis without request headers,
+client IPs, or raw credential material. Keep their retention no longer than the
+incident-response policy requires.
 
 Apply an account-level rate-limit rule to repeated failed upgrade attempts,
 but key it on an appropriate network signal rather than credentials, room
