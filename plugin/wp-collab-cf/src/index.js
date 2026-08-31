@@ -187,7 +187,15 @@ if ( config.wsUrl && config.tokenUrl ) {
 								);
 						} );
 					} );
-					const statusBridge = createProviderStatusBridge( provider );
+					const statusBridge = createProviderStatusBridge(
+						provider,
+						{
+							// Collections only invalidate query results; they do not
+							// carry editable entity state. Do not publish their transient
+							// disconnects into Gutenberg's global connection status.
+							publishRetryableDisconnects: objectId !== null,
+						}
+					);
 					provider.connect().catch( ( error ) => {
 						// eslint-disable-next-line no-console
 						console.error(

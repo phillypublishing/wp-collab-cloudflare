@@ -181,7 +181,10 @@ test( 'session timeout reports an automatic retry until reconnected', () => {
 test( 'generic transient closes wait for a continuous outage before pausing', () => {
 	const provider = createProviderDouble();
 	const clock = createClock();
-	const bridge = createProviderStatusBridge( provider, clock );
+	const bridge = createProviderStatusBridge( provider, {
+		...clock,
+		publishRetryableDisconnects: true,
+	} );
 	const statuses = [];
 	bridge.on( 'status', ( status ) => statuses.push( status ) );
 
@@ -212,6 +215,51 @@ test( 'generic transient closes wait for a continuous outage before pausing', ()
 		willAutoRetryInMs: 800,
 		backgroundRetriesFailed: true,
 	} );
+	bridge.destroy();
+} );
+
+test( 'collection retry outages stay out of Gutenberg connection status', () => {
+	const provider = createProviderDouble();
+	const clock = createClock();
+	const bridge = createProviderStatusBridge( provider, {
+		...clock,
+		publishRetryableDisconnects: false,
+	} );
+	const statuses = [];
+	bridge.on( 'status', ( status ) => statuses.push( status ) );
+
+	provider.wsconnected = false;
+	provider.emit( 'connection-close', [ { code: 1006 } ] );
+	provider.emit( 'status', [ { status: 'disconnected' } ] );
+	clock.advance( CONNECTION_OUTAGE_THRESHOLD_MS );
+	assert.deepEqual( statuses, [] );
+
+	provider.wsUnsuccessfulReconnects = 4;
+	provider.emit( 'connection-close', [ { code: 1006 } ] );
+	provider.emit( 'status', [ { status: 'disconnected' } ] );
+	assert.deepEqual( statuses, [] );
+
+	provider.emit( 'status', [ { status: 'connecting' } ] );
+	provider.emit( 'status', [ { status: 'connected' } ] );
+	assert.deepEqual( statuses, [
+		{ status: 'connecting' },
+		{ status: 'connected' },
+	] );
+	bridge.destroy();
+} );
+
+test( 'collection terminal closes still reach Gutenberg', () => {
+	const provider = createProviderDouble();
+	const bridge = createProviderStatusBridge( provider, {
+		publishRetryableDisconnects: false,
+	} );
+	const statuses = [];
+	bridge.on( 'status', ( status ) => statuses.push( status ) );
+
+	provider.emit( 'connection-close', [ { code: 1008 } ] );
+	provider.emit( 'status', [ { status: 'disconnected' } ] );
+
+	assert.deepEqual( statuses, [ { status: 'disconnected' } ] );
 	bridge.destroy();
 } );
 
