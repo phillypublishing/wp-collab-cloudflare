@@ -34,14 +34,17 @@ function isTerminalClose( code ) {
  * @param {{
  *   clearTimeout?: (timer: any) => void,
  *   now?: () => number,
- *   setTimeout?: (callback: () => void, milliseconds: number) => any
- * }} clock Injectable clock used by deterministic tests.
+ *   setTimeout?: (callback: () => void, milliseconds: number) => any,
+ *   publishRetryableDisconnects?: boolean
+ * }} options Injectable clock and downstream retry-failure policy.
  * @return {typeof provider} A transparent provider facade with bridged statuses.
  */
-export function createProviderStatusBridge( provider, clock = {} ) {
-	const clearScheduledTimeout = clock.clearTimeout || clearTimeout;
-	const now = clock.now || Date.now;
-	const scheduleTimeout = clock.setTimeout || setTimeout;
+export function createProviderStatusBridge( provider, options = {} ) {
+	const clearScheduledTimeout = options.clearTimeout || clearTimeout;
+	const now = options.now || Date.now;
+	const scheduleTimeout = options.setTimeout || setTimeout;
+	const publishRetryableDisconnects =
+		options.publishRetryableDisconnects !== false;
 	const boundMethods = new Map();
 	const listeners = new Set();
 	let connectionStableTimer = null;
@@ -104,10 +107,15 @@ export function createProviderStatusBridge( provider, clock = {} ) {
 		const providerFailedRetries =
 			provider.wsUnsuccessfulReconnects +
 			( provider.wsconnected === false ? 1 : 0 );
-		suppressNextDisconnected = provider.wsconnected === true;
+		suppressNextDisconnected =
+			provider.wsconnected === true || ! publishRetryableDisconnects;
 		if ( ! retryable ) {
 			resetOutage();
 			emitStatus( { status: 'disconnected' } );
+			return;
+		}
+		if ( ! publishRetryableDisconnects ) {
+			resetOutage();
 			return;
 		}
 
@@ -130,7 +138,10 @@ export function createProviderStatusBridge( provider, clock = {} ) {
 		} );
 	};
 	const onStatus = ( status ) => {
-		if ( status.status === 'disconnected' && suppressNextDisconnected ) {
+		if (
+			status.status === 'disconnected' &&
+			( suppressNextDisconnected || ! publishRetryableDisconnects )
+		) {
 			suppressNextDisconnected = false;
 			return;
 		}
