@@ -27,6 +27,7 @@ import {
   createConnectionTelemetryId,
   recordConfigurationInvalid,
   recordConnectionAccepted,
+  recordConnectionAuthenticated,
   recordConnectionClosed,
   recordConnectionError,
   recordConnectionOpened,
@@ -39,7 +40,7 @@ const LEGACY_AUTH_EXPIRY_STATE_KEY = "__wpCollabAuthExpires";
 const RATE_STATE_KEY = "__wpCollabRateWindow";
 const CONNECTION_IDENTITY_STATE_KEY = "__wpCollabIdentity";
 const CONNECTION_OPENED_AT_STATE_KEY = "__wpCollabOpenedAt";
-const CONNECTION_TELEMETRY_ID_STATE_KEY = "__wpCollabTelemetryId";
+const LEGACY_CONNECTION_TELEMETRY_ID_STATE_KEY = "__wpCollabTelemetryId";
 const SESSION_EXPIRED_CLOSE_CODE = 4001;
 const RESOURCE_LIMIT_CLOSE_CODE = 4008;
 type RateState = {
@@ -56,7 +57,7 @@ type CollaborationConnectionState = Record<string, unknown> & {
   [RATE_STATE_KEY]?: RateState;
   [CONNECTION_IDENTITY_STATE_KEY]?: ConnectionIdentity;
   [CONNECTION_OPENED_AT_STATE_KEY]?: number;
-  [CONNECTION_TELEMETRY_ID_STATE_KEY]?: string;
+  [LEGACY_CONNECTION_TELEMETRY_ID_STATE_KEY]?: string;
 };
 type ResourceLimits = ReturnType<typeof parseResourceLimits>;
 
@@ -132,7 +133,6 @@ export class Collaboration extends YServer {
     }
 
     const openedAt = Date.now();
-    const telemetryConnectionId = createConnectionTelemetryId();
     const sessionExpiresAt =
       openedAt + this.resourceLimits.connectionTimeoutMilliseconds;
     if (
@@ -141,7 +141,6 @@ export class Collaboration extends YServer {
         [SESSION_EXPIRY_STATE_KEY]: sessionExpiresAt,
         [CONNECTION_IDENTITY_STATE_KEY]: identity,
         [CONNECTION_OPENED_AT_STATE_KEY]: openedAt,
-        [CONNECTION_TELEMETRY_ID_STATE_KEY]: telemetryConnectionId,
       }))
     ) {
       this.rejectForResourceLimit(
@@ -382,7 +381,8 @@ function connectionLifecycleContext(
 ) {
   const identity = connection.state?.[CONNECTION_IDENTITY_STATE_KEY];
   const telemetryConnectionId =
-    connection.state?.[CONNECTION_TELEMETRY_ID_STATE_KEY];
+    identity?.connectionId ||
+    connection.state?.[LEGACY_CONNECTION_TELEMETRY_ID_STATE_KEY];
   return {
     siteId: identity?.siteId || "unknown",
     blogId: identity?.blogId || "unknown",
@@ -531,9 +531,16 @@ export default {
               room: lobby.name,
               authKeys: getAuthKeys(env),
             });
+            const telemetryConnectionId = createConnectionTelemetryId();
+            recordConnectionAuthenticated(env.COLLAB_METRICS, {
+              ...verifiedConnection.identity,
+              room: lobby.name,
+              connectionId: telemetryConnectionId,
+            });
             return sanitizeAuthenticatedRequest(
               connectionRequest,
-              verifiedConnection
+              verifiedConnection,
+              telemetryConnectionId
             );
           } catch (error) {
             return authFailure(error, env.COLLAB_METRICS);

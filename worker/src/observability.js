@@ -4,6 +4,7 @@ const METRIC_INDEX = "wp-collab-cloudflare";
 const METRIC_EVENTS = new Set([
   "configuration_invalid",
   "connection_accepted",
+  "connection_authenticated",
   "connection_closed",
   "connection_error",
   "connection_opened",
@@ -13,6 +14,7 @@ const METRIC_EVENTS = new Set([
 const METRIC_STATUSES = new Set([
   "abnormal",
   "auth_unavailable",
+  "authenticated",
   "byte_rate_exceeded",
   "configuration_invalid",
   "connection_limit_exceeded",
@@ -114,6 +116,20 @@ export function createConnectionTelemetryId() {
  *   connectionId: string
  * }} ConnectionLifecycleContext
  */
+
+/**
+ * @param {AnalyticsEngineDataset | undefined} dataset
+ * @param {ConnectionLifecycleContext} context
+ */
+export function recordConnectionAuthenticated(dataset, context) {
+  recordConnectionLifecycle(
+    dataset,
+    "connection_authenticated",
+    "authenticated",
+    context,
+    {}
+  );
+}
 
 /**
  * @param {AnalyticsEngineDataset | undefined} dataset

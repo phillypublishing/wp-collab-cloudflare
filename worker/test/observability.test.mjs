@@ -5,6 +5,7 @@ import {
   createConnectionTelemetryId,
   recordConfigurationInvalid,
   recordConnectionAccepted,
+  recordConnectionAuthenticated,
   recordConnectionClosed,
   recordConnectionError,
   recordConnectionOpened,
@@ -105,6 +106,7 @@ test("connection lifecycle records retain verified incident identifiers and clos
   console.warn = (message) => messages.push(JSON.parse(message));
 
   try {
+    recordConnectionAuthenticated(dataset, lifecycleContext);
     recordConnectionOpened(dataset, lifecycleContext, {
       roomConnectionCount: 1,
     });
@@ -129,6 +131,21 @@ test("connection lifecycle records retain verified incident identifiers and clos
   }
 
   assert.deepEqual(dataset.points, [
+    {
+      indexes: ["connection_abc123"],
+      blobs: [
+        "connection_authenticated",
+        "authenticated",
+        "0123456789abcdef0123456789abcdef",
+        "1",
+        "postType/post",
+        "305806",
+        "7",
+        "v1.0123456789abcdef0123456789abcdef.1.cG9zdFR5cGUvcG9zdA.MzA1ODA2",
+        "connection_abc123",
+      ],
+      doubles: [1, 0, 0, 0, 0, 0, 0],
+    },
     {
       indexes: ["connection_abc123"],
       blobs: [
@@ -191,6 +208,14 @@ test("connection lifecycle records retain verified incident identifiers and clos
     },
   ]);
   assert.deepEqual(messages, [
+    {
+      service: "wp-collab-cloudflare",
+      event: "connection_authenticated",
+      status: "authenticated",
+      ...lifecycleContext,
+      durationMilliseconds: 0,
+      roomConnectionCount: 0,
+    },
     {
       service: "wp-collab-cloudflare",
       event: "connection_opened",

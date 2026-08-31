@@ -12,6 +12,7 @@ const AUTH_BLOG_HEADER = "X-WP-Collab-Blog";
 const AUTH_OBJECT_TYPE_HEADER = "X-WP-Collab-Object-Type";
 const AUTH_OBJECT_ID_HEADER = "X-WP-Collab-Object-Id";
 const AUTH_USER_HEADER = "X-WP-Collab-User";
+const AUTH_CONNECTION_ID_HEADER = "X-WP-Collab-Connection-Id";
 const SITE_PATTERN = /^[A-Za-z0-9_-]{16,64}$/u;
 const ROOM_PATTERN = /^v1\.([A-Za-z0-9_-]{16,64})\.([1-9][0-9]{0,19})\.([A-Za-z0-9_-]{1,256})\.([A-Za-z0-9_-]{1,256})$/u;
 const NUMERIC_ID_PATTERN = /^[1-9][0-9]{0,19}$/u;
@@ -19,6 +20,8 @@ const OBJECT_TYPE_PATTERN = /^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/u;
 const OBJECT_ID_PATTERN = /^(?:[1-9][0-9]{0,19}|collection)$/u;
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{32,128}$/u;
 const KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/u;
+const CONNECTION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
@@ -456,11 +459,19 @@ async function importVerificationKey(authKey) {
  *
  * @param {Request} request
  * @param {VerifiedConnection} verifiedConnection
+ * @param {string} connectionId Opaque server-owned telemetry correlation ID.
  * @returns {Request}
  */
-export function sanitizeAuthenticatedRequest(request, verifiedConnection) {
+export function sanitizeAuthenticatedRequest(
+  request,
+  verifiedConnection,
+  connectionId
+) {
   const { claims, identity } = verifiedConnection;
-  if (!Number.isSafeInteger(claims.exp)) {
+  if (
+    !Number.isSafeInteger(claims.exp) ||
+    !CONNECTION_ID_PATTERN.test(connectionId)
+  ) {
     throw new TypeError("Verified collaboration identity is invalid");
   }
 
@@ -482,6 +493,7 @@ export function sanitizeAuthenticatedRequest(request, verifiedConnection) {
   headers.set(AUTH_OBJECT_TYPE_HEADER, identity.objectType);
   headers.set(AUTH_OBJECT_ID_HEADER, identity.objectId);
   headers.set(AUTH_USER_HEADER, identity.userId);
+  headers.set(AUTH_CONNECTION_ID_HEADER, connectionId);
   return new Request(request, { headers });
 }
 
@@ -489,7 +501,7 @@ export function sanitizeAuthenticatedRequest(request, verifiedConnection) {
  * Read the bounded identity added only after credential verification.
  *
  * @param {Request} request
- * @returns {{ siteId: string, blogId: string, objectType: string, objectId: string, userId: string } | null}
+ * @returns {{ siteId: string, blogId: string, objectType: string, objectId: string, userId: string, connectionId: string } | null}
  */
 export function getAuthenticatedConnectionIdentity(request) {
   const identity = {
@@ -498,6 +510,7 @@ export function getAuthenticatedConnectionIdentity(request) {
     objectType: request.headers.get(AUTH_OBJECT_TYPE_HEADER) || "",
     objectId: request.headers.get(AUTH_OBJECT_ID_HEADER) || "",
     userId: request.headers.get(AUTH_USER_HEADER) || "",
+    connectionId: request.headers.get(AUTH_CONNECTION_ID_HEADER) || "",
   };
   if (
     !SITE_PATTERN.test(identity.siteId) ||
@@ -505,7 +518,8 @@ export function getAuthenticatedConnectionIdentity(request) {
     !OBJECT_TYPE_PATTERN.test(identity.objectType) ||
     identity.objectType.length > 128 ||
     !OBJECT_ID_PATTERN.test(identity.objectId) ||
-    !NUMERIC_ID_PATTERN.test(identity.userId)
+    !NUMERIC_ID_PATTERN.test(identity.userId) ||
+    !CONNECTION_ID_PATTERN.test(identity.connectionId)
   ) {
     return null;
   }
