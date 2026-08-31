@@ -2,12 +2,12 @@
 /**
  * Plugin Name: WP Collab Cloudflare
  * Description: Routes Gutenberg real-time collaboration through a Cloudflare Workers relay instead of HTTP polling.
- * Version: 0.5.11
+ * Version: 0.5.12
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WP_COLLAB_CF_VERSION', '0.5.11' );
+define( 'WP_COLLAB_CF_VERSION', '0.5.12' );
 
 require_once __DIR__ . '/includes/compatibility/version-policy.php';
 require_once __DIR__ . '/includes/compatibility/memberpress.php';
