@@ -581,14 +581,21 @@ test("y-partyserver reconnects after a real session timeout with a fresh grant",
   );
   assert.equal(provider.wsconnected, true);
 
+  const peer = await connect(runtime);
+  const initialUpdatePromise = waitForSyncUpdate(peer.socket);
+  const peerDocument = new Y.Doc();
+  peer.socket.send(syncMessage(0, Y.encodeStateVector(peerDocument)));
+  Y.applyUpdate(peerDocument, await initialUpdatePromise);
+  assert.equal(
+    peerDocument.getText("content").toString(),
+    "survived timeout"
+  );
+
+  const convergenceUpdatePromise = waitForSyncUpdate(peer.socket);
   providerDocument
     .getText("content")
     .insert(providerDocument.getText("content").length, " and converged");
-  const peer = await connect(runtime);
-  const updatePromise = waitForSyncUpdate(peer.socket);
-  const peerDocument = new Y.Doc();
-  peer.socket.send(syncMessage(0, Y.encodeStateVector(peerDocument)));
-  Y.applyUpdate(peerDocument, await updatePromise);
+  Y.applyUpdate(peerDocument, await convergenceUpdatePromise);
   assert.equal(
     peerDocument.getText("content").toString(),
     "survived timeout and converged"
