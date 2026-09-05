@@ -302,10 +302,24 @@ class WrongMeprAppCtrl {
 }
 
 class Compat_Dependency {
-	public $deps;
+	public static $dependency_reads = 0;
+	private $dependencies;
 
 	public function __construct( $deps = array() ) {
-		$this->deps = $deps;
+		$this->dependencies = $deps;
+	}
+
+	public function __isset( $name ) {
+		return 'deps' === $name;
+	}
+
+	public function __get( $name ) {
+		if ( 'deps' !== $name ) {
+			return null;
+		}
+
+		++self::$dependency_reads;
+		return $this->dependencies;
 	}
 }
 
@@ -358,6 +372,7 @@ function compat_reset_adapter_state() {
 	unset(
 		$GLOBALS['wp_collab_cf_compatibility_adapters'],
 		$GLOBALS['wp_collab_cf_meta_box_suppression'],
+		$GLOBALS['wp_collab_cf_yoast_reverse_dependency_cache'],
 		$GLOBALS['wp_collab_cf_yoast_stable_request_diagnostics'],
 		$GLOBALS['wp_collab_cf_yoast_unexpected_dependency_handles']
 	);
@@ -597,16 +612,68 @@ $compat_scripts->add( 'wp-seo-premium-blocks', array( 'yoast-seo-premium-metabox
 $compat_scripts->add( 'yoast-seo-premium-metabox' );
 $compat_scripts->add( 'wp-seo-premium-redirect-notifications-gutenberg' );
 $compat_scripts->add( 'wp-seo-premium-dynamic-blocks' );
+Compat_Dependency::$dependency_reads = 0;
 compat_assert_same(
 	array(),
 	wp_collab_cf_yoast_find_unexpected_reverse_dependencies( $compat_scripts ),
 	'The exact denied graph should not report its own edges as unexpected.'
 );
+$dependency_reads_after_first_scan = Compat_Dependency::$dependency_reads;
+compat_assert_true( $dependency_reads_after_first_scan > 0, 'The first reverse-dependency lookup must inspect the registry.' );
+$dependency_reads_before_memo_hit = Compat_Dependency::$dependency_reads;
+compat_assert_same(
+	array(),
+	wp_collab_cf_yoast_find_unexpected_reverse_dependencies( $compat_scripts ),
+	'A memoized reverse-dependency lookup must preserve the first result.'
+);
+compat_assert_same(
+	count( $compat_scripts->registered ),
+	Compat_Dependency::$dependency_reads - $dependency_reads_before_memo_hit,
+	'An unchanged registry must only fingerprint direct dependencies and skip the reachability scan.'
+);
 $compat_scripts->add( 'unexpected-addon-entry', array( 'yoast-seo-post-edit' ) );
+$dependency_reads_before_registry_growth = Compat_Dependency::$dependency_reads;
 compat_assert_same(
 	array( 'unexpected-addon-entry' ),
 	wp_collab_cf_yoast_find_unexpected_reverse_dependencies( $compat_scripts ),
 	'An unexpected reverse dependency must be identified.'
+);
+compat_assert_true(
+	Compat_Dependency::$dependency_reads - $dependency_reads_before_registry_growth > count( $compat_scripts->registered ),
+	'Registering another handle must invalidate the reverse-dependency memo.'
+);
+$compat_scripts->add( 'unexpected-addon-entry', array() );
+compat_assert_same(
+	array(),
+	wp_collab_cf_yoast_find_unexpected_reverse_dependencies( $compat_scripts ),
+	'Replacing an existing handle\'s dependency list must invalidate the reverse-dependency memo.'
+);
+
+$shared_dependency_scripts = new Compat_Dependencies();
+$shared_dependency_scripts->add( 'yoast-seo-post-edit' );
+$shared_dependency_scripts->add( 'shared-denied-bridge', array( 'yoast-seo-post-edit' ) );
+$shared_dependency_scripts->add( 'first-shared-root', array( 'shared-denied-bridge' ) );
+$shared_dependency_scripts->add( 'second-shared-root', array( 'shared-denied-bridge' ) );
+Compat_Dependency::$dependency_reads = 0;
+compat_assert_same(
+	array( 'first-shared-root', 'second-shared-root', 'shared-denied-bridge' ),
+	wp_collab_cf_yoast_find_unexpected_reverse_dependencies( $shared_dependency_scripts ),
+	'A shared reverse-dependency subtree must classify every external root.'
+);
+compat_assert_same(
+	7,
+	Compat_Dependency::$dependency_reads,
+	'Shared reverse-dependency subtrees must be traversed only once per scan.'
+);
+
+$cyclic_dependency_scripts = new Compat_Dependencies();
+$cyclic_dependency_scripts->add( 'yoast-seo-post-edit' );
+$cyclic_dependency_scripts->add( 'cycle-first', array( 'cycle-second', 'yoast-seo-post-edit' ) );
+$cyclic_dependency_scripts->add( 'cycle-second', array( 'cycle-first' ) );
+compat_assert_same(
+	array( 'cycle-first', 'cycle-second' ),
+	wp_collab_cf_yoast_find_unexpected_reverse_dependencies( $cyclic_dependency_scripts ),
+	'A dependency cycle must not hide a denied path that is resolved through another edge.'
 );
 
 add_filter(
@@ -911,6 +978,11 @@ foreach ( wp_collab_cf_yoast_denied_script_handles() as $handle ) {
 compat_assert_same( false, wp_collab_cf_yoast_filter_editor_features( true ), 'The owner filter should apply before late dependency drift.' );
 $compat_scripts->add( 'unexpected-late-entry', array( 'yoast-seo-post-edit' ) );
 wp_collab_cf_yoast_prune_editor_assets();
+$late_dependency_yoast = wp_collab_cf_get_compatibility_adapter_diagnostics()['yoast'];
+compat_assert_same( false, $late_dependency_yoast['eligible'], 'An unexpected late reverse dependency must make the adapter ineligible.' );
+compat_assert_same( 'unexpected', $late_dependency_yoast['dependencyState'], 'An unexpected late reverse dependency must update dependency state.' );
+compat_assert_same( 1, $late_dependency_yoast['unexpectedDependencyCount'], 'An unexpected late reverse dependency must update the opaque count.' );
+compat_assert_same( 'unexpected_reverse_dependency', $late_dependency_yoast['reason'], 'An unexpected late reverse dependency must expose the fail-closed reason.' );
 $filtered = wp_collab_cf_filter_block_editor_meta_boxes( compat_registry( array() ) );
 $yoast = wp_collab_cf_get_compatibility_adapter_diagnostics()['yoast'];
 compat_assert_same( 'unexpected_reverse_dependency', $yoast['reason'], 'Late reverse dependencies must fail closed.' );

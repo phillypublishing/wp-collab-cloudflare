@@ -740,38 +740,68 @@ function wp_collab_cf_yoast_current_post_type() {
 }
 
 /**
+ * Read the direct handles for one registered script dependency.
+ *
+ * @param mixed $dependency Registered script dependency.
+ * @return array Direct dependency handles.
+ */
+function wp_collab_cf_yoast_dependency_handles( $dependency ) {
+	if ( ! is_object( $dependency ) || ! isset( $dependency->deps ) ) {
+		return array();
+	}
+
+	$deps = $dependency->deps;
+	return is_array( $deps ) ? $deps : array();
+}
+
+/**
  * Determine whether a registered handle reaches any denied entrypoint.
  *
  * @param string $handle     Registered handle.
  * @param array  $registered Registered dependencies.
  * @param array  $denied_set Denied handle set.
  * @param array  $visiting   Traversal cycle guard.
+ * @param array  $results    Shared reachability results for this registry scan.
+ * @param bool   $incomplete Whether a cycle prevented a definitive negative result.
  * @return bool Whether the handle depends on a denied entrypoint.
  */
-function wp_collab_cf_yoast_dependency_reaches_denied( $handle, $registered, $denied_set, &$visiting ) {
+function wp_collab_cf_yoast_dependency_reaches_denied( $handle, $registered, $denied_set, &$visiting, &$results, &$incomplete ) {
+	$incomplete = false;
+	if ( array_key_exists( $handle, $results ) ) {
+		return $results[ $handle ];
+	}
 	if ( isset( $denied_set[ $handle ] ) ) {
+		$results[ $handle ] = true;
 		return true;
 	}
-	if ( isset( $visiting[ $handle ] ) || ! isset( $registered[ $handle ] ) ) {
+	if ( isset( $visiting[ $handle ] ) ) {
+		$incomplete = true;
+		return false;
+	}
+	if ( ! isset( $registered[ $handle ] ) ) {
+		$results[ $handle ] = false;
 		return false;
 	}
 
 	$visiting[ $handle ] = true;
-	$dependency          = $registered[ $handle ];
-	$deps                = is_object( $dependency ) && isset( $dependency->deps ) && is_array( $dependency->deps )
-		? $dependency->deps
-		: array();
+	$deps                = wp_collab_cf_yoast_dependency_handles( $registered[ $handle ] );
 	foreach ( $deps as $dep ) {
+		$dependency_incomplete = false;
 		if (
 			is_string( $dep ) &&
-			wp_collab_cf_yoast_dependency_reaches_denied( $dep, $registered, $denied_set, $visiting )
+			wp_collab_cf_yoast_dependency_reaches_denied( $dep, $registered, $denied_set, $visiting, $results, $dependency_incomplete )
 		) {
 			unset( $visiting[ $handle ] );
+			$results[ $handle ] = true;
 			return true;
 		}
+		$incomplete = $incomplete || $dependency_incomplete;
 	}
 	unset( $visiting[ $handle ] );
 
+	if ( ! $incomplete ) {
+		$results[ $handle ] = false;
+	}
 	return false;
 }
 
@@ -785,6 +815,8 @@ function wp_collab_cf_yoast_dependency_reaches_denied( $handle, $registered, $de
  * @return array Raw unexpected handles.
  */
 function wp_collab_cf_yoast_find_unexpected_reverse_dependencies( $scripts = null ) {
+	global $wp_collab_cf_yoast_reverse_dependency_cache;
+
 	if ( null === $scripts && function_exists( 'wp_scripts' ) ) {
 		$scripts = wp_scripts();
 	}
@@ -792,21 +824,57 @@ function wp_collab_cf_yoast_find_unexpected_reverse_dependencies( $scripts = nul
 		return array();
 	}
 
-	$denied     = wp_collab_cf_yoast_denied_script_handles();
-	$denied_set = array_fill_keys( $denied, true );
+	$denied                 = wp_collab_cf_yoast_denied_script_handles();
+	$denied_set             = array_fill_keys( $denied, true );
+	$registered_fingerprint = array();
+	foreach ( $scripts->registered as $handle => $dependency ) {
+		$registered_fingerprint[] = array(
+			$handle,
+			wp_collab_cf_yoast_dependency_handles( $dependency ),
+		);
+	}
+	$fingerprint = hash(
+		'sha256',
+		serialize(
+			array(
+				count( $scripts->registered ),
+				$registered_fingerprint,
+				$denied,
+			)
+		)
+	);
+	if (
+		isset( $wp_collab_cf_yoast_reverse_dependency_cache['scripts'] ) &&
+		$scripts === $wp_collab_cf_yoast_reverse_dependency_cache['scripts'] &&
+		isset( $wp_collab_cf_yoast_reverse_dependency_cache['fingerprint'] ) &&
+		$fingerprint === $wp_collab_cf_yoast_reverse_dependency_cache['fingerprint'] &&
+		isset( $wp_collab_cf_yoast_reverse_dependency_cache['unexpected'] ) &&
+		is_array( $wp_collab_cf_yoast_reverse_dependency_cache['unexpected'] )
+	) {
+		return $wp_collab_cf_yoast_reverse_dependency_cache['unexpected'];
+	}
+
 	$unexpected = array();
+	$results    = array();
 	foreach ( $scripts->registered as $handle => $dependency ) {
 		if ( ! is_string( $handle ) || isset( $denied_set[ $handle ] ) ) {
 			continue;
 		}
-		$visiting = array();
-		if ( wp_collab_cf_yoast_dependency_reaches_denied( $handle, $scripts->registered, $denied_set, $visiting ) ) {
+		$visiting   = array();
+		$incomplete = false;
+		if ( wp_collab_cf_yoast_dependency_reaches_denied( $handle, $scripts->registered, $denied_set, $visiting, $results, $incomplete ) ) {
 			$unexpected[] = $handle;
 		}
 	}
 
 	sort( $unexpected, SORT_STRING );
-	return array_values( array_unique( $unexpected ) );
+	$unexpected = array_values( array_unique( $unexpected ) );
+	$wp_collab_cf_yoast_reverse_dependency_cache = array(
+		'fingerprint' => $fingerprint,
+		'scripts'     => $scripts,
+		'unexpected'  => $unexpected,
+	);
+	return $unexpected;
 }
 
 /**
