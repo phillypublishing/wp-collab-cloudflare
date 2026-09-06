@@ -2,17 +2,18 @@
 /**
  * Plugin Name: WP Collab Cloudflare
  * Description: Routes Gutenberg real-time collaboration through a Cloudflare Workers relay instead of HTTP polling.
- * Version: 0.5.13
+ * Version: 0.5.14
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WP_COLLAB_CF_VERSION', '0.5.13' );
+define( 'WP_COLLAB_CF_VERSION', '0.5.14' );
 
 require_once __DIR__ . '/includes/compatibility/version-policy.php';
 require_once __DIR__ . '/includes/compatibility/memberpress.php';
 require_once __DIR__ . '/includes/compatibility/yoast-seo.php';
 require_once __DIR__ . '/includes/compatibility/meta-box-policy.php';
+require_once __DIR__ . '/includes/outage-telemetry.php';
 
 /**
  * Set your deployed Worker URL, site identifier, and signing secret in
@@ -735,9 +736,10 @@ function wp_collab_cf_room_for_object( $object_type, $object_id ) {
  *
  * @param string $object_type Sync object type.
  * @param mixed  $object_id   Sync object identifier.
+ * @param array  $correlation Optional browser correlation UUIDs.
  * @return array|WP_Error
  */
-function wp_collab_cf_issue_credentials( $object_type, $object_id ) {
+function wp_collab_cf_issue_credentials( $object_type, $object_id, $correlation = array() ) {
 	if ( ! wp_collab_cf_is_configured() ) {
 		return new WP_Error( 'wp_collab_cf_not_configured', 'Secure collaboration is not configured.', array( 'status' => 503 ) );
 	}
@@ -775,6 +777,7 @@ function wp_collab_cf_issue_credentials( $object_type, $object_id ) {
 	if ( defined( 'WP_COLLAB_CF_AUTH_KEY_ID' ) ) {
 		$claims['kid'] = WP_COLLAB_CF_AUTH_KEY_ID;
 	}
+	$claims    = array_merge( $claims, wp_collab_cf_telemetry_correlation( $correlation ) );
 	$json      = wp_json_encode( $claims, JSON_UNESCAPED_SLASHES );
 	if ( false === $json ) {
 		return new WP_Error( 'wp_collab_cf_token_error', 'The collaboration credential could not be created.', array( 'status' => 500 ) );
@@ -821,9 +824,10 @@ function wp_collab_cf_bounded_log_identifier( $value, $pattern, $maximum ) {
  * @param mixed          $object_id   Requested sync object ID.
  * @param array|WP_Error $result      Credential result.
  * @param float|int      $duration_ms Credential issuance duration.
+ * @param array          $correlation Optional browser correlation UUIDs.
  * @return array
  */
-function wp_collab_cf_build_credential_log_record( $object_type, $object_id, $result, $duration_ms ) {
+function wp_collab_cf_build_credential_log_record( $object_type, $object_id, $result, $duration_ms, $correlation = array() ) {
 	$is_error    = is_wp_error( $result );
 	$duration_ms = is_numeric( $duration_ms ) ? (float) $duration_ms : 0;
 	$duration_ms = (int) round( max( 0, min( 86400000, $duration_ms ) ) );
@@ -867,7 +871,7 @@ function wp_collab_cf_build_credential_log_record( $object_type, $object_id, $re
 		) ?? 'unknown_error';
 	}
 
-	return $record;
+	return array_merge( $record, wp_collab_cf_telemetry_correlation( $correlation ) );
 }
 
 /**
@@ -890,14 +894,15 @@ function wp_collab_cf_should_log_credential_requests() {
  * @param mixed          $object_id   Requested sync object ID.
  * @param array|WP_Error $result      Credential result.
  * @param float|int      $duration_ms Credential issuance duration.
+ * @param array          $correlation Optional browser correlation UUIDs.
  * @return bool Whether a record was written.
  */
-function wp_collab_cf_log_credential_request( $object_type, $object_id, $result, $duration_ms ) {
+function wp_collab_cf_log_credential_request( $object_type, $object_id, $result, $duration_ms, $correlation = array() ) {
 	if ( ! wp_collab_cf_should_log_credential_requests() ) {
 		return false;
 	}
 
-	$record = wp_collab_cf_build_credential_log_record( $object_type, $object_id, $result, $duration_ms );
+	$record = wp_collab_cf_build_credential_log_record( $object_type, $object_id, $result, $duration_ms, $correlation );
 	$json   = wp_json_encode( $record, JSON_UNESCAPED_SLASHES );
 	if ( false === $json ) {
 		return false;
@@ -911,6 +916,15 @@ function wp_collab_cf_log_credential_request( $object_type, $object_id, $result,
  * Register the authenticated credential endpoint used by the editor provider.
  */
 function wp_collab_cf_register_rest_routes() {
+	register_rest_route(
+		'wp-collab-cf/v1',
+		'/outage-report',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wp_collab_cf_rest_outage_report',
+			'permission_callback' => 'is_user_logged_in',
+		)
+	);
 	register_rest_route(
 		'wp-collab-cf/v1',
 		'/token',
@@ -1000,20 +1014,30 @@ function wp_collab_cf_rest_issue_credentials( WP_REST_Request $request ) {
 	$json_params = $request->get_json_params();
 	$object_type = $request->get_param( 'objectType' );
 	$object_id   = $request->get_param( 'objectId' );
-	if (
+	$correlation = wp_collab_cf_telemetry_correlation( $json_params );
+	$invalid_correlation = false;
+	foreach ( array( 'editorSessionId', 'connectionAttemptId' ) as $field ) {
+		if ( is_array( $json_params ) && array_key_exists( $field, $json_params ) && ! isset( $correlation[ $field ] ) ) {
+			$invalid_correlation = true;
+		}
+	}
+	if ( $invalid_correlation ) {
+		$credentials = new WP_Error( 'wp_collab_cf_invalid_correlation', 'Invalid collaboration correlation identifier.', array( 'status' => 400 ) );
+	} elseif (
 		null === $object_id &&
 		( ! is_array( $json_params ) || ! array_key_exists( 'objectId', $json_params ) )
 	) {
 		$credentials = new WP_Error( 'wp_collab_cf_invalid_object', 'This collaboration object is not supported.', array( 'status' => 400 ) );
 	} else {
-		$credentials = wp_collab_cf_issue_credentials( $object_type, $object_id );
+		$credentials = wp_collab_cf_issue_credentials( $object_type, $object_id, $correlation );
 	}
 
 	wp_collab_cf_log_credential_request(
 		$object_type,
 		$object_id,
 		$credentials,
-		( microtime( true ) - $started_at ) * 1000
+		( microtime( true ) - $started_at ) * 1000,
+		$correlation
 	);
 	if ( is_wp_error( $credentials ) ) {
 		return $credentials;
@@ -1053,17 +1077,20 @@ function wp_collab_cf_enqueue_scripts( $hook ) {
 	wp_localize_script(
 		'wp-collab-cf',
 		'wpCollabCf',
-		array(
-			'wsUrl'             => $configured ? WP_COLLAB_CF_WS_URL : '',
-			'tokenUrl'          => $configured ? rest_url( 'wp-collab-cf/v1/token' ) : '',
-			'metaBoxSuppression' => array(
-				'canManage'  => $can_manage,
-				'enabled'    => wp_collab_cf_is_meta_box_suppression_enabled(),
-				'settingsUrl' => $can_manage
-					? wp_collab_cf_get_settings_page_url()
-					: '',
+		array_merge(
+			array(
+				'wsUrl'             => $configured ? WP_COLLAB_CF_WS_URL : '',
+				'tokenUrl'          => $configured ? rest_url( 'wp-collab-cf/v1/token' ) : '',
+				'metaBoxSuppression' => array(
+					'canManage'  => $can_manage,
+					'enabled'    => wp_collab_cf_is_meta_box_suppression_enabled(),
+					'settingsUrl' => $can_manage
+						? wp_collab_cf_get_settings_page_url()
+						: '',
+				),
+				'yoastPrimaryCategory' => wp_collab_cf_yoast_primary_category_editor_config(),
 			),
-			'yoastPrimaryCategory' => wp_collab_cf_yoast_primary_category_editor_config(),
+			wp_collab_cf_browser_telemetry_config( $configured )
 		)
 	);
 }

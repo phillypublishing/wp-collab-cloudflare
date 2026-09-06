@@ -35,7 +35,8 @@ function isTerminalClose( code ) {
  *   clearTimeout?: (timer: any) => void,
  *   now?: () => number,
  *   setTimeout?: (callback: () => void, milliseconds: number) => any,
- *   publishRetryableDisconnects?: boolean
+ *   publishRetryableDisconnects?: boolean,
+ *   onDestroy?: () => void
  * }} options Injectable clock and downstream retry-failure policy.
  * @return {typeof provider} A transparent provider facade with bridged statuses.
  */
@@ -76,9 +77,7 @@ export function createProviderStatusBridge( provider, options = {} ) {
 		outageStartedAt = null;
 	};
 	const outageElapsedMs = () =>
-		outageStartedAt === null
-			? 0
-			: Math.max( 0, now() - outageStartedAt );
+		outageStartedAt === null ? 0 : Math.max( 0, now() - outageStartedAt );
 	const scheduleOutageFailure = () => {
 		outageFailureTimer = scheduleTimeout( () => {
 			outageFailureTimer = null;
@@ -167,6 +166,11 @@ export function createProviderStatusBridge( provider, options = {} ) {
 				return;
 			}
 			destroyed = true;
+			try {
+				options.onDestroy?.();
+			} catch {
+				/* Diagnostics cannot prevent cleanup. */
+			}
 			clearConnectionStableTimer();
 			resetOutage();
 			provider.off( 'connection-close', onConnectionClose );

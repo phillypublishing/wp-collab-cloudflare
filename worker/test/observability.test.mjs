@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   createConnectionTelemetryId,
+  recordSetupMilestone,
+  observeSetupOperation,
   recordConfigurationInvalid,
   recordConnectionAccepted,
   recordConnectionAuthenticated,
@@ -354,4 +356,58 @@ test("connection lifecycle records reject overlong WordPress identifiers", () =>
     "unknown",
     "unknown",
   ]);
+});
+
+
+test("setup spans preserve operation results and failures without leaking exceptions", async (t) => {
+  const messages = [];
+  t.mock.method(console, "warn", (message) => messages.push(JSON.parse(message)));
+  let now = 1000;
+  t.mock.method(Date, "now", () => now);
+  const result = await observeSetupOperation(lifecycleContext, "alarm_read", async () => {
+    now += 43000;
+    return 123;
+  });
+  assert.equal(result, 123);
+  const failure = new Error("token=secret private-document");
+  await assert.rejects(observeSetupOperation(lifecycleContext, "alarm_write", async () => {
+    now += 20;
+    throw failure;
+  }), (error) => error === failure);
+  assert.deepEqual(messages.map(({ stage, status, durationMilliseconds }) => ({ stage, status, durationMilliseconds })), [
+    { stage: "alarm_read", status: "started", durationMilliseconds: 0 },
+    { stage: "alarm_read", status: "completed", durationMilliseconds: 43000 },
+    { stage: "alarm_write", status: "started", durationMilliseconds: 0 },
+    { stage: "alarm_write", status: "failed", durationMilliseconds: 20 },
+  ]);
+  assert.equal(JSON.stringify(messages).includes(failure.message), false);
+});
+
+test("setup telemetry is bounded, works before authenticated identity, and is best effort", async (t) => {
+  const messages = [];
+  t.mock.method(console, "warn", (message) => messages.push(JSON.parse(message)));
+  recordSetupMilestone({ room: lifecycleContext.room }, "room_load", "started", 0);
+  recordSetupMilestone({ editorSessionId: "token=secret" }, "token=secret", "token=secret", Infinity);
+  assert.equal(messages[0].room, lifecycleContext.room);
+  assert.equal(messages[0].userId, "unknown");
+  assert.equal(messages[0].connectionId, "unknown");
+  assert.equal(messages[1].stage, "unknown");
+  assert.equal(messages[1].status, "unknown");
+  assert.equal(messages[1].durationMilliseconds, 0);
+  assert.equal(JSON.stringify(messages).includes("token=secret"), false);
+  t.mock.method(console, "warn", () => { throw new Error("sink failed"); });
+  assert.equal(await observeSetupOperation(lifecycleContext, "relay_connect", async () => 42), 42);
+});
+
+test("signed browser correlation appends to lifecycle analytics without shifting existing columns", (t) => {
+  t.mock.method(console, "warn", () => {});
+  const dataset = recordingDataset();
+  const correlation = {
+    editorSessionId: "01234567-89ab-4def-8123-456789abcdef",
+    connectionAttemptId: "ABCDEF01-2345-6789-ABCD-EF0123456789",
+  };
+  recordConnectionAuthenticated(dataset, { ...lifecycleContext, ...correlation });
+  assert.deepEqual(dataset.points[0].blobs.slice(9), Object.values(correlation));
+  assert.equal(dataset.points[0].blobs[8], lifecycleContext.connectionId);
+  assert.deepEqual(dataset.points[0].indexes, [lifecycleContext.connectionId]);
 });

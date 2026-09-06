@@ -1,4 +1,5 @@
 // @ts-check
+import { CORRELATION_ID_PATTERN } from "./auth.js";
 
 const METRIC_INDEX = "wp-collab-cloudflare";
 const METRIC_EVENTS = new Set([
@@ -59,6 +60,16 @@ const OBJECT_ID_PATTERN = /^(?:[1-9][0-9]{0,19}|collection)$/u;
 const ROOM_PATTERN =
   /^v1\.[A-Za-z0-9_-]{16,64}\.[1-9][0-9]{0,19}\.[A-Za-z0-9_-]{1,256}\.[A-Za-z0-9_-]{1,256}$/u;
 const CONNECTION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
+const SETUP_STAGES = new Set([
+  "authenticated_route",
+  "room_load",
+  "legacy_storage_cleanup",
+  "connect_handler",
+  "alarm_read",
+  "alarm_write",
+  "relay_connect",
+]);
+const SETUP_STATUSES = new Set(["started", "completed", "failed"]);
 
 /**
  * Emit one privacy-safe count event. The allowlists are deliberately closed:
@@ -113,7 +124,9 @@ export function createConnectionTelemetryId() {
  *   objectId: string,
  *   userId: string,
  *   room: string,
- *   connectionId: string
+ *   connectionId: string,
+ *   editorSessionId?: string,
+ *   connectionAttemptId?: string
  * }} ConnectionLifecycleContext
  */
 
@@ -274,6 +287,11 @@ function recordConnectionLifecycle(dataset, event, status, context, details) {
         safeContext.userId,
         safeContext.room,
         safeContext.connectionId,
+        // Append optional browser correlation: existing blob1-9 and doubles
+        // retain their meanings. Neither browser ID becomes a sampling index.
+        ...(safeContext.editorSessionId !== undefined || safeContext.connectionAttemptId !== undefined
+          ? [safeContext.editorSessionId || "unknown", safeContext.connectionAttemptId || "unknown"]
+          : []),
       ],
       doubles: [
         1,
@@ -291,7 +309,7 @@ function recordConnectionLifecycle(dataset, event, status, context, details) {
 }
 
 /**
- * @param {ConnectionLifecycleContext} context
+ * @param {Partial<ConnectionLifecycleContext>} context
  * @returns {ConnectionLifecycleContext}
  */
 function boundedLifecycleContext(context) {
@@ -308,6 +326,12 @@ function boundedLifecycleContext(context) {
     userId: boundedString(context?.userId, NUMERIC_ID_PATTERN),
     room: boundedString(context?.room, ROOM_PATTERN),
     connectionId: boundedString(context?.connectionId, CONNECTION_ID_PATTERN),
+    ...(context?.editorSessionId === undefined ? {} : {
+      editorSessionId: boundedString(context.editorSessionId, CORRELATION_ID_PATTERN),
+    }),
+    ...(context?.connectionAttemptId === undefined ? {} : {
+      connectionAttemptId: boundedString(context.connectionAttemptId, CORRELATION_ID_PATTERN),
+    }),
   };
 }
 
@@ -346,4 +370,55 @@ function boundedNumber(value) {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
     : 0;
+}
+
+
+/**
+ * Setup spans are operational logs only; they do not multiply lifecycle counts
+ * in Analytics Engine. Fixed stages/statuses and bounded context exclude raw
+ * errors, request headers, credentials, close reasons, and document content.
+ * onLoad runs before onConnect and can only supply the room, not an authenticated
+ * user or connection. A platform reset may leave a started span without an end.
+ *
+ * @param {Partial<ConnectionLifecycleContext>} context
+ * @param {string} stage
+ * @param {string} status
+ * @param {number} [durationMilliseconds]
+ */
+export function recordSetupMilestone(context, stage, status, durationMilliseconds = 0) {
+  try {
+    console.warn(JSON.stringify({
+      service: "wp-collab-cloudflare",
+      event: "connection_setup",
+      stage: SETUP_STAGES.has(stage) ? stage : "unknown",
+      status: SETUP_STATUSES.has(status) ? status : "unknown",
+      ...boundedLifecycleContext(context),
+      durationMilliseconds: boundedNumber(durationMilliseconds),
+    }));
+  } catch {
+    // Instrumentation must not affect the operation being diagnosed.
+  }
+}
+
+/**
+ * Measure one existing operation, preserving its result or original exception.
+ * There are no additional network calls, storage writes, or timers.
+ *
+ * @template T
+ * @param {Partial<ConnectionLifecycleContext>} context
+ * @param {string} stage
+ * @param {() => T | PromiseLike<T>} operation
+ * @returns {Promise<T>}
+ */
+export async function observeSetupOperation(context, stage, operation) {
+  const startedAt = Date.now();
+  recordSetupMilestone(context, stage, "started");
+  try {
+    const result = await operation();
+    recordSetupMilestone(context, stage, "completed", Date.now() - startedAt);
+    return result;
+  } catch (error) {
+    recordSetupMilestone(context, stage, "failed", Date.now() - startedAt);
+    throw error;
+  }
 }

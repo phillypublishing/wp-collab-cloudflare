@@ -25,6 +25,8 @@ import {
 } from "./limits.js";
 import {
   createConnectionTelemetryId,
+  observeSetupOperation,
+  recordSetupMilestone,
   recordConfigurationInvalid,
   recordConnectionAccepted,
   recordConnectionAuthenticated,
@@ -119,7 +121,20 @@ export class Collaboration extends YServer {
     // Versions before the ephemeral-relay model stored document bytes here.
     // Delete that exact legacy value without touching alarms or hibernating
     // WebSocket attachments, which remain part of the connection lifecycle.
-    await clearLegacyDocumentState(this.ctx.storage);
+    // Initialization has room identity only: it precedes authenticated onConnect.
+    let room = "unknown";
+    try {
+      room = this.name;
+    } catch {
+      // A stale alarm can initialize without PartyServer's name fallback.
+      // Telemetry must not introduce a new failure in legacy state cleanup.
+    }
+    const context = { room };
+    await observeSetupOperation(context, "room_load", () =>
+      observeSetupOperation(context, "legacy_storage_cleanup", () =>
+        clearLegacyDocumentState(this.ctx.storage)
+      )
+    );
   }
 
   async onConnect(
@@ -127,59 +142,70 @@ export class Collaboration extends YServer {
     context: ConnectionContext
   ): Promise<void> {
     const identity = getAuthenticatedConnectionIdentity(context.request);
-    if (!identity) {
-      connection.close(SESSION_EXPIRED_CLOSE_CODE, "Authentication context missing");
-      return;
-    }
+    const setupContext = { ...identity, room: this.name };
+    await observeSetupOperation(setupContext, "connect_handler", async () => {
+      if (!identity) {
+        connection.close(SESSION_EXPIRED_CLOSE_CODE, "Authentication context missing");
+        return;
+      }
 
-    const openedAt = Date.now();
-    const sessionExpiresAt =
-      openedAt + this.resourceLimits.connectionTimeoutMilliseconds;
-    if (
-      !trySetConnectionState(connection, (state) => ({
-        ...(state || {}),
-        [SESSION_EXPIRY_STATE_KEY]: sessionExpiresAt,
-        [CONNECTION_IDENTITY_STATE_KEY]: identity,
-        [CONNECTION_OPENED_AT_STATE_KEY]: openedAt,
-      }))
-    ) {
-      this.rejectForResourceLimit(
-        connection,
-        "connection_state_limit_exceeded"
-      );
-      return;
-    }
-
-    let connectionCount = 0;
-    for (const _connection of this.getConnections()) {
-      connectionCount += 1;
-      if (!hasConnectionCapacity(connectionCount, this.resourceLimits)) {
+      const openedAt = Date.now();
+      const sessionExpiresAt =
+        openedAt + this.resourceLimits.connectionTimeoutMilliseconds;
+      if (
+        !trySetConnectionState(connection, (state) => ({
+          ...(state || {}),
+          [SESSION_EXPIRY_STATE_KEY]: sessionExpiresAt,
+          [CONNECTION_IDENTITY_STATE_KEY]: identity,
+          [CONNECTION_OPENED_AT_STATE_KEY]: openedAt,
+        }))
+      ) {
         this.rejectForResourceLimit(
           connection,
-          "connection_limit_exceeded",
-          connectionCount,
-          this.resourceLimits.maxConnectionsPerRoom
+          "connection_state_limit_exceeded"
         );
         return;
       }
-    }
 
-    const grantDelay = getAuthExpiryDelay(context.request);
-    if (grantDelay === 0) {
-      connection.close(SESSION_EXPIRED_CLOSE_CODE, "Authentication expired");
-      return;
-    }
+      let connectionCount = 0;
+      for (const _connection of this.getConnections()) {
+        connectionCount += 1;
+        if (!hasConnectionCapacity(connectionCount, this.resourceLimits)) {
+          this.rejectForResourceLimit(
+            connection,
+            "connection_limit_exceeded",
+            connectionCount,
+            this.resourceLimits.maxConnectionsPerRoom
+          );
+          return;
+        }
+      }
 
-    const currentAlarm = await this.ctx.storage.getAlarm();
-    if (currentAlarm === null || sessionExpiresAt < currentAlarm) {
-      await this.ctx.storage.setAlarm(sessionExpiresAt);
-    }
-    await super.onConnect(connection, context);
-    recordConnectionOpened(
-      this.metrics,
-      connectionLifecycleContext(connection, this.name),
-      { roomConnectionCount: connectionCount }
-    );
+      const grantDelay = getAuthExpiryDelay(context.request);
+      if (grantDelay === 0) {
+        connection.close(SESSION_EXPIRED_CLOSE_CODE, "Authentication expired");
+        return;
+      }
+
+      const currentAlarm = await observeSetupOperation(
+        setupContext,
+        "alarm_read",
+        () => this.ctx.storage.getAlarm()
+      );
+      if (currentAlarm === null || sessionExpiresAt < currentAlarm) {
+        await observeSetupOperation(setupContext, "alarm_write", () =>
+          this.ctx.storage.setAlarm(sessionExpiresAt)
+        );
+      }
+      await observeSetupOperation(setupContext, "relay_connect", () =>
+        super.onConnect(connection, context)
+      );
+      recordConnectionOpened(
+        this.metrics,
+        connectionLifecycleContext(connection, this.name),
+        { roomConnectionCount: connectionCount }
+      );
+    });
   }
 
   async onMessage(
@@ -389,6 +415,12 @@ function connectionLifecycleContext(
     objectType: identity?.objectType || "unknown",
     objectId: identity?.objectId || "unknown",
     userId: identity?.userId || "unknown",
+    ...(identity?.editorSessionId === undefined
+      ? {}
+      : { editorSessionId: identity.editorSessionId }),
+    ...(identity?.connectionAttemptId === undefined
+      ? {}
+      : { connectionAttemptId: identity.connectionAttemptId }),
     room,
     connectionId:
       typeof telemetryConnectionId === "string"
@@ -522,32 +554,63 @@ export default {
     // Use PartyServer's built-in routing: /parties/<bindingName>/<roomId>.
     // Authentication runs before PartyServer forwards the WebSocket upgrade to
     // the Durable Object, so rejected requests never allocate or join a room.
-    const response = await routeAfterWebSocketGuard(request, () =>
-      routePartykitRequest(request, env, {
-        onBeforeConnect: async (connectionRequest, lobby) => {
-          try {
-            const verifiedConnection = await verifyConnectionRequest({
-              request: connectionRequest,
-              room: lobby.name,
-              authKeys: getAuthKeys(env),
-            });
-            const telemetryConnectionId = createConnectionTelemetryId();
-            recordConnectionAuthenticated(env.COLLAB_METRICS, {
-              ...verifiedConnection.identity,
-              room: lobby.name,
-              connectionId: telemetryConnectionId,
-            });
-            return sanitizeAuthenticatedRequest(
-              connectionRequest,
-              verifiedConnection,
-              telemetryConnectionId
-            );
-          } catch (error) {
-            return authFailure(error, env.COLLAB_METRICS);
-          }
-        },
-      })
-    );
+    const response = await routeAfterWebSocketGuard(request, async () => {
+      let setupContext: (ConnectionIdentity & { room: string }) | undefined;
+      let startedAt = 0;
+      try {
+        const routedResponse = await routePartykitRequest(request, env, {
+          onBeforeConnect: async (connectionRequest, lobby) => {
+            try {
+              const verifiedConnection = await verifyConnectionRequest({
+                request: connectionRequest,
+                room: lobby.name,
+                authKeys: getAuthKeys(env),
+              });
+              const telemetryConnectionId = createConnectionTelemetryId();
+              recordConnectionAuthenticated(env.COLLAB_METRICS, {
+                ...verifiedConnection.identity,
+                room: lobby.name,
+                connectionId: telemetryConnectionId,
+              });
+              const authenticatedRequest = sanitizeAuthenticatedRequest(
+                connectionRequest,
+                verifiedConnection,
+                telemetryConnectionId
+              );
+              setupContext = {
+                ...verifiedConnection.identity,
+                room: lobby.name,
+                connectionId: telemetryConnectionId,
+              };
+              startedAt = Date.now();
+              recordSetupMilestone(setupContext, "authenticated_route", "started");
+              return authenticatedRequest;
+            } catch (error) {
+              return authFailure(error, env.COLLAB_METRICS);
+            }
+          },
+        });
+        if (setupContext) {
+          recordSetupMilestone(
+            setupContext,
+            "authenticated_route",
+            "completed",
+            Date.now() - startedAt
+          );
+        }
+        return routedResponse;
+      } catch (error) {
+        if (setupContext) {
+          recordSetupMilestone(
+            setupContext,
+            "authenticated_route",
+            "failed",
+            Date.now() - startedAt
+          );
+        }
+        throw error;
+      }
+    });
     if (response) {
       if (response.status === 101 && response.webSocket) {
         recordConnectionAccepted(env.COLLAB_METRICS);

@@ -49,6 +49,8 @@ jobs:
           find includes/compatibility -type f -name '*.php' -print0 > "$compatibility_modules"
           test -s "$compatibility_modules"
           xargs -0 -n1 php -l < "$compatibility_modules"
+      - run: php -l includes/outage-telemetry.php
+      - run: php test/outage-telemetry.php
       - run: php test/rtc-diagnostics.php
       - run: php test/compatibility-adapters.php
       - run: php test/compatibility-version-policy.php absent

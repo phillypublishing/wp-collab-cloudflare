@@ -158,7 +158,7 @@ function base64UrlEncode(bytes) {
   return Buffer.from(bytes).toString("base64url");
 }
 
-async function mintToken(lifetimeSeconds = 30) {
+async function mintToken(lifetimeSeconds = 30, correlation = {}) {
   const now = Math.floor(Date.now() / 1000);
   const claims = {
     v: 1,
@@ -171,6 +171,7 @@ async function mintToken(lifetimeSeconds = 30) {
     iat: now,
     nbf: now - 5,
     exp: now + lifetimeSeconds,
+    ...correlation,
   };
   const encoder = new TextEncoder();
   const payload = base64UrlEncode(
@@ -195,6 +196,7 @@ async function connect(
   runtime,
   {
     attachmentShape,
+    correlation,
     expectedCloseDescription,
     lifetimeSeconds = 30,
   } = {}
@@ -202,7 +204,7 @@ async function connect(
   const baseUrl = await runtime.ready;
   const url = new URL(`/parties/collaboration/${room}`, baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  const token = await mintToken(lifetimeSeconds);
+  const token = await mintToken(lifetimeSeconds, correlation);
   const options = { origin };
   if (attachmentShape !== undefined) {
     options.headers = { [attachmentFixtureHeader]: attachmentShape };
@@ -890,4 +892,61 @@ test("workerd scrubs legacy Yjs storage when a room activates", runtimeTestOptio
     hasLifecycleAlarm: true,
     lifecycleMarker: "preserved",
   });
+});
+
+
+test("workerd records correlated setup milestones and retains correlation through close", runtimeTestOptions, async (t) => {
+  const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-setup-"));
+  let output = "";
+  const runtime = new Miniflare({
+    ...createRuntimeOptions(persistPath),
+    handleRuntimeStdio(stdout, stderr) {
+      stdout.on("data", (chunk) => { output += chunk.toString(); });
+      stderr.on("data", (chunk) => { output += chunk.toString(); });
+    },
+  });
+  t.after(async () => {
+    await runtime.dispose();
+    await rm(persistPath, { recursive: true, force: true });
+  });
+  const correlation = {
+    editorSessionId: "01234567-89ab-4def-8123-456789abcdef",
+    connectionAttemptId: "ABCDEF01-2345-6789-ABCD-EF0123456789",
+  };
+  const { socket } = await connect(runtime, { correlation });
+  await closeSocket(socket, "setup telemetry socket");
+  // Runtime stdout/stderr delivery can trail the WebSocket close notification.
+  const deadline = Date.now() + 5000;
+  while (!output.includes('"event":"connection_closed"') && Date.now() < deadline) {
+    await delay(10);
+  }
+  const events = output.split("\n").flatMap((line) => {
+    const jsonStart = line.indexOf('{"service":"wp-collab-cloudflare"');
+    if (jsonStart < 0) return [];
+    try { return [JSON.parse(line.slice(jsonStart))]; } catch { return []; }
+  });
+  // Closing the final peer deliberately initializes a fresh empty document.
+  // Check the initial connection separately from that second onLoad lifecycle.
+  const closeIndex = events.findIndex((event) => event.event === "connection_closed");
+  assert.ok(closeIndex >= 0);
+  const setupEvents = events.slice(0, closeIndex);
+  for (const stage of ["authenticated_route", "room_load", "legacy_storage_cleanup", "connect_handler", "alarm_read", "alarm_write", "relay_connect"]) {
+    const records = setupEvents.filter((event) => event.event === "connection_setup" && event.stage === stage);
+    assert.deepEqual(records.map((event) => event.status), ["started", "completed"], stage);
+    assert.ok(records.every((event) => Number.isSafeInteger(event.durationMilliseconds) && event.durationMilliseconds >= 0));
+    if (["room_load", "legacy_storage_cleanup"].includes(stage)) {
+      assert.equal(records[0].userId, "unknown");
+    } else {
+      assert.equal(records[0].editorSessionId, correlation.editorSessionId);
+      assert.equal(records[0].connectionAttemptId, correlation.connectionAttemptId);
+    }
+  }
+  const authenticated = events.find((event) => event.event === "connection_authenticated");
+  const closed = events.find((event) => event.event === "connection_closed");
+  assert.ok(authenticated);
+  assert.ok(closed);
+  assert.equal(closed.connectionId, authenticated.connectionId);
+  assert.equal(closed.editorSessionId, correlation.editorSessionId);
+  assert.equal(closed.connectionAttemptId, correlation.connectionAttemptId);
+  assert.equal(output.includes("wp-collab-token."), false);
 });
