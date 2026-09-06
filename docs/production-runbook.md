@@ -212,6 +212,70 @@ reached the edge successfully but failed before Durable Object connection setup
 and open telemetry completed. Keep this private log's retention bounded by the
 incident-response policy.
 
+### Browser outage timeline
+
+Browser outage logging follows `WP_COLLAB_CF_LOG_CREDENTIAL_REQUESTS` by default.
+Set `WP_COLLAB_CF_LOG_BROWSER_OUTAGES` explicitly, or use the
+`wp_collab_cf_log_browser_outages` filter, to control it independently. When
+disabled, newly loaded editors do not initialize the reporter. An already open
+editor may still send reports, but the server stops logging them. No production
+configuration change is required by this code change.
+
+The plugin observes the actual `.editor-sync-connection-error-modal` mounting
+and removal and records `modal_shown` / `modal_hidden`, including the observed
+duration. It also records credential request timing and bounded error codes,
+socket open/close/error, the 10-second outage threshold, protocol sync completion,
+recovery duration, retry count, online/offline state, and tab visibility. A socket
+opening is distinct from completing the sync handshake; neither proves that
+WordPress has saved the story. Browser `online` is context, not proof that the
+Worker is reachable.
+
+Reports go to authenticated `POST /wp-json/wp-collab-cf/v1/outage-report` and
+become PHP error-log records with `schema: wp-collab-cf-outage/v1` and
+`source: browser`. WordPress supplies the authenticated `userId`, `blogId`, and
+configured `siteId`, and requires edit permission for `postId`. Event metadata
+remains a browser claim. The endpoint accepts only a fixed schema, strips unknown
+fields, and rejects malformed known fields. No story text, credentials, headers,
+URLs, raw exceptions, or socket close reasons are collected.
+
+| Field | Investigation use |
+| --- | --- |
+| `editorSessionId` | Random identifier for one loaded editor tab |
+| `connectionAttemptId` | Random identifier for one credential request / connection attempt |
+| `outageId` | Joins the start, retries, and recovery of one provider outage |
+| `postId` | Story being edited; may differ from the disconnected entity |
+| `objectType`, `objectId` | Affected entity, such as a reusable block; null ID means collection |
+| `seq`, `at`, `elapsedMs` | Per-tab order, browser wall time, and monotonic elapsed milliseconds |
+| `receivedAt` | WordPress receipt time; delayed uploads retain the original browser timestamps |
+| `versions` | Plugin, Gutenberg, and WordPress versions captured when the editor loaded |
+
+For an incident, filter the PHP outage records by `userId`, group by
+`editorSessionId`, and sort by `seq`. Join `connectionAttemptId` to credential
+and Worker lifecycle/setup logs; use `outageId` across successive attempts.
+Compare `credential_succeeded`, Worker setup milestones, `socket_opened`, and
+`sync_completed` to locate a delay. For modal events, attached entities are the
+outages active when the modal appeared, not proof of which one triggered it.
+Multiple candidates produce multiple rows for the same modal transition; count
+unique `(editorSessionId, at, event)` transitions when measuring appearances.
+
+The buffer holds the last 50 events in memory. Uploads occur on outage thresholds,
+credential failures, recovery, modal transitions, online, or page exit, with a
+minimum 15 seconds between attempts. Failed uploads retry after 30 seconds;
+each request has a 5-second timeout. Pending events survive upload failures but
+do not survive a reload or closed tab, and delivery on page exit is best effort.
+Sequence gaps can indicate buffer overflow. Durations cap at seven days.
+The endpoint limits bodies to 48 KiB and batches to 50 events, with best-effort
+limits of 10 nonempty batches per user per minute and per-session sequence
+deduplication for one hour. Telemetry failure does not change editing or retries.
+
+Deploy the Worker and then the plugin through the normal staging/release process.
+Old clients remain valid without correlation fields. In staging, interrupt a
+test editor's connection for more than 10 seconds, restore it, and verify one
+modal show/hide pair and distinct socket-open/sync/recovery milestones. Verify
+that the attempt IDs join to Worker logs and that disabling the logging switch
+stops new PHP outage records. This validation requires a separate approved
+deployment; local tests do not enable production telemetry.
+
 ### Worker connection lifecycle
 
 The Worker keeps authentication failures and resource-limit events aggregate,
@@ -268,6 +332,8 @@ events extend it with reviewed, bounded operational identifiers:
 | `blob7` | Verified WordPress user ID |
 | `blob8` | Verified room ID |
 | `blob9` | Server-generated connection correlation ID |
+| `blob10` | Optional WordPress-signed browser `editorSessionId` UUID |
+| `blob11` | Optional WordPress-signed browser `connectionAttemptId` UUID |
 | `double1` | Event count, always `1` |
 | `double2` | Non-negative observed byte/connection count when applicable, otherwise `0` |
 | `double3` | Non-negative configured limit when applicable, otherwise `0` |
@@ -279,6 +345,21 @@ events extend it with reviewed, bounded operational identifiers:
 Keep this schema closed; use `unknown` for any identifier or code that does not
 match its reviewed shape. Never add arbitrary request strings, error messages,
 or close reasons as labels.
+
+The optional browser UUIDs originate in the browser and are validated and signed
+by WordPress. The Worker uses only the signed values and strips spoofed internal
+headers. They are correlation hints, not identities or sampling keys; the
+server-generated `connectionId` remains authoritative for each socket's
+lifecycle. Older attachments without these fields still work.
+
+Console-only `connection_setup` events add `stage`, `status` (`started`,
+`completed`, or `failed`), and `durationMilliseconds` for `authenticated_route`,
+`room_load`, `legacy_storage_cleanup`, `connect_handler`, `alarm_read`,
+`alarm_write` (when needed), and `relay_connect`. These events do not add Analytics
+Engine event counts. A start with no completion helps locate interrupted setup;
+missing logs alone are not proof of a specific failure. Room-load stages have
+room context but no authenticated socket identity, so correlate those by room
+and time. Exceptions retain their original behavior and are never logged raw.
 
 After a staging deployment has produced data, use an Account Analytics Read
 token with Cloudflare's Analytics Engine SQL API. This dashboard query shows

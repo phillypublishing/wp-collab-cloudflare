@@ -145,6 +145,7 @@ const compatibilityVersionPolicyModes = [
 	'local-missing',
 ];
 const expectedPhpDiagnosticsCommands = [
+	'php test/outage-telemetry.php',
 	'php test/rtc-diagnostics.php',
 	'php test/compatibility-adapters.php',
 	...compatibilityVersionPolicyModes.map( ( mode ) => `php test/compatibility-version-policy.php ${ mode }` ),

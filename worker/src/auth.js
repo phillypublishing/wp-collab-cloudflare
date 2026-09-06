@@ -13,6 +13,11 @@ const AUTH_OBJECT_TYPE_HEADER = "X-WP-Collab-Object-Type";
 const AUTH_OBJECT_ID_HEADER = "X-WP-Collab-Object-Id";
 const AUTH_USER_HEADER = "X-WP-Collab-User";
 const AUTH_CONNECTION_ID_HEADER = "X-WP-Collab-Connection-Id";
+const CORRELATION_HEADERS = {
+  editorSessionId: "X-WP-Collab-Editor-Session-Id",
+  connectionAttemptId: "X-WP-Collab-Connection-Attempt-Id",
+};
+export const CORRELATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SITE_PATTERN = /^[A-Za-z0-9_-]{16,64}$/u;
 const ROOM_PATTERN = /^v1\.([A-Za-z0-9_-]{16,64})\.([1-9][0-9]{0,19})\.([A-Za-z0-9_-]{1,256})\.([A-Za-z0-9_-]{1,256})$/u;
 const NUMERIC_ID_PATTERN = /^[1-9][0-9]{0,19}$/u;
@@ -33,7 +38,9 @@ const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
  *     blogId: string,
  *     objectType: string,
  *     objectId: string,
- *     userId: string
+ *     userId: string,
+ *     editorSessionId?: string,
+ *     connectionAttemptId?: string
  *   }
  * }} VerifiedConnection
  */
@@ -424,11 +431,24 @@ export async function verifyConnectionRequest({
     throw new AuthError(403, "origin_mismatch");
   }
 
+  /** @type {{ editorSessionId?: string, connectionAttemptId?: string }} */
+  const correlation = {};
+  for (const field of /** @type {Array<keyof typeof CORRELATION_HEADERS>} */ (Object.keys(CORRELATION_HEADERS))) {
+    if (Object.hasOwn(claims, field)) {
+      const value = claims[field];
+      if (typeof value !== "string" || !CORRELATION_ID_PATTERN.test(value)) {
+        throw new AuthError(401, "invalid_claims");
+      }
+      correlation[field] = value;
+    }
+  }
+
   return {
     claims,
     identity: {
       ...roomIdentity,
       userId: sub,
+      ...correlation,
     },
   };
 }
@@ -494,6 +514,13 @@ export function sanitizeAuthenticatedRequest(
   headers.set(AUTH_OBJECT_ID_HEADER, identity.objectId);
   headers.set(AUTH_USER_HEADER, identity.userId);
   headers.set(AUTH_CONNECTION_ID_HEADER, connectionId);
+  for (const field of /** @type {Array<keyof typeof CORRELATION_HEADERS>} */ (Object.keys(CORRELATION_HEADERS))) {
+    // Strip caller headers even when older signed credentials omit correlation.
+    headers.delete(CORRELATION_HEADERS[field]);
+    if (identity[field] !== undefined) {
+      headers.set(CORRELATION_HEADERS[field], identity[field]);
+    }
+  }
   return new Request(request, { headers });
 }
 
@@ -501,7 +528,7 @@ export function sanitizeAuthenticatedRequest(
  * Read the bounded identity added only after credential verification.
  *
  * @param {Request} request
- * @returns {{ siteId: string, blogId: string, objectType: string, objectId: string, userId: string, connectionId: string } | null}
+ * @returns {{ siteId: string, blogId: string, objectType: string, objectId: string, userId: string, connectionId: string, editorSessionId?: string, connectionAttemptId?: string } | null}
  */
 export function getAuthenticatedConnectionIdentity(request) {
   const identity = {
@@ -523,7 +550,18 @@ export function getAuthenticatedConnectionIdentity(request) {
   ) {
     return null;
   }
-  return identity;
+  /** @type {{ editorSessionId?: string, connectionAttemptId?: string }} */
+  const correlation = {};
+  for (const field of /** @type {Array<keyof typeof CORRELATION_HEADERS>} */ (Object.keys(CORRELATION_HEADERS))) {
+    const value = request.headers.get(CORRELATION_HEADERS[field]);
+    if (value !== null) {
+      if (!CORRELATION_ID_PATTERN.test(value)) {
+        return null;
+      }
+      correlation[field] = value;
+    }
+  }
+  return { ...identity, ...correlation };
 }
 
 /**

@@ -13,6 +13,7 @@ export const PLUGIN_ARTIFACT_FILES = Object.freeze( [
 	'wp-collab-cf/includes/compatibility/meta-box-policy.php',
 	'wp-collab-cf/includes/compatibility/version-policy.php',
 	'wp-collab-cf/includes/compatibility/yoast-seo.php',
+	'wp-collab-cf/includes/outage-telemetry.php',
 	'wp-collab-cf/wp-collab-cf.php',
 ] );
 

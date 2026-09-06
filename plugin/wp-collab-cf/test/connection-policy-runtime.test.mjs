@@ -4,6 +4,10 @@ import test from 'node:test';
 
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
+import {
+	createOutageReporter,
+	createConnectionTelemetry,
+} from '../src/outage-telemetry.mjs';
 
 import {
 	createProviderStatusBridge,
@@ -63,7 +67,10 @@ class RuntimeWebSocket extends EventTarget {
 
 async function waitForSocketCount( count, timeout = 2_000 ) {
 	const deadline = Date.now() + timeout;
-	while ( RuntimeWebSocket.instances.length < count && Date.now() < deadline ) {
+	while (
+		RuntimeWebSocket.instances.length < count &&
+		Date.now() < deadline
+	) {
 		await delay( 5 );
 	}
 	assert.equal( RuntimeWebSocket.instances.length, count );
@@ -73,14 +80,73 @@ async function waitForSocketCount( count, timeout = 2_000 ) {
 function createRuntimeProvider() {
 	RuntimeWebSocket.instances = [];
 	const document = new Y.Doc();
-	const provider = new YProvider( 'localhost:8787', 'runtime-retry', document, {
-		connect: false,
-		disableBc: true,
-		maxBackoffTime: 400,
-		WebSocketPolyfill: RuntimeWebSocket,
-	} );
+	const provider = new YProvider(
+		'localhost:8787',
+		'runtime-retry',
+		document,
+		{
+			connect: false,
+			disableBc: true,
+			maxBackoffTime: 400,
+			WebSocketPolyfill: RuntimeWebSocket,
+		}
+	);
 	return { document, provider };
 }
+
+test( 'outage telemetry observes real provider close and sync without changing retry policy', async ( t ) => {
+	const { document, provider } = createRuntimeProvider();
+	const batches = [];
+	const reporter = createOutageReporter( {
+		send: async ( batch ) => batches.push( batch ),
+		getContext: () => ( {
+			postId: 302085,
+			versions: {},
+			online: true,
+			visibility: 'visible',
+		} ),
+	} );
+	const telemetry = createConnectionTelemetry(
+		reporter,
+		'postType/wp_block',
+		248365
+	);
+	telemetry.attach( provider );
+	const bridge = createProviderStatusBridge( provider, {
+		onDestroy: () => telemetry.destroy(),
+	} );
+	t.after( () => {
+		bridge.destroy();
+		reporter.destroy();
+		document.destroy();
+	} );
+	await provider.connect();
+	const socket = await waitForSocketCount( 1 );
+	socket.open();
+	socket.fail();
+	const replacement = await waitForSocketCount( 2 );
+	replacement.open();
+	// A real Yjs sync-step-2 message completes synchronization after socket open.
+	const message = new Event( 'message' );
+	Object.defineProperty( message, 'data', {
+		value: Uint8Array.from( [ 0, 1, 2, 0, 0 ] ).buffer,
+	} );
+	replacement.dispatchEvent( message );
+	await reporter.flush();
+	assert.equal( provider.synced, true );
+	assert.equal( provider.shouldConnect, true );
+	const events = batches.flatMap( ( batch ) => batch.events );
+	assert.ok(
+		events.some(
+			( event ) =>
+				event.event === 'socket_closed' && event.closeCode === 1006
+		)
+	);
+	assert.deepEqual(
+		events.slice( -3 ).map( ( event ) => event.event ),
+		[ 'socket_opened', 'sync_completed', 'outage_recovered' ]
+	);
+} );
 
 test( 'real y-partyserver retries use bridged timing without an early pause', async ( t ) => {
 	const { document, provider } = createRuntimeProvider();
@@ -106,10 +172,7 @@ test( 'real y-partyserver retries use bridged timing without an early pause', as
 		socket.fail();
 		socket = await waitForSocketCount( count );
 		const expectedDelay = [ 100, 200, 400, 400 ][ count - 2 ];
-		assert.equal(
-			disconnected.at( -1 ).willAutoRetryInMs,
-			expectedDelay
-		);
+		assert.equal( disconnected.at( -1 ).willAutoRetryInMs, expectedDelay );
 		assert.ok(
 			socket.createdAt >= closedAt + expectedDelay - 20,
 			`replacement socket ${ count } opened before the ${ expectedDelay }ms retry delay`

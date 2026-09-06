@@ -67,6 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           php -l wp-collab-cf.php
+          php -l includes/outage-telemetry.php
           compatibility_modules="$(mktemp)"
           trap 'rm -f "$compatibility_modules"' EXIT
           find includes/compatibility -type f -name '*.php' -print0 > "$compatibility_modules"
@@ -77,6 +78,7 @@ jobs:
         if: steps.version.outputs.release == 'true'
         working-directory: plugin/wp-collab-cf
         run: |
+          php test/outage-telemetry.php
           php test/rtc-diagnostics.php
           php test/compatibility-adapters.php
           php test/compatibility-version-policy.php absent

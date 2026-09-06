@@ -581,3 +581,35 @@ test("computes the remaining connection-grant validity", () => {
     0
   );
 });
+
+
+test("signed outage correlation survives sanitization and spoofed headers do not", async () => {
+  const correlation = {
+    editorSessionId: "01234567-89ab-4def-8123-456789abcdef",
+    connectionAttemptId: "ABCDEF01-2345-6789-ABCD-EF0123456789",
+  };
+  for (const claims of [{}, correlation]) {
+    const request = makeRequest(await mintToken(claims));
+    request.headers.set("X-WP-Collab-Editor-Session-Id", "spoofed");
+    request.headers.set("X-WP-Collab-Connection-Attempt-Id", "spoofed");
+    const verified = await verifyConnectionRequest({ request, room, authKeys: { [site]: secret }, nowSeconds });
+    const sanitized = sanitizeAuthenticatedRequest(request, verified, connectionTelemetryId);
+    const identity = getAuthenticatedConnectionIdentity(sanitized);
+    for (const key of ["editorSessionId", "connectionAttemptId"]) {
+      assert.equal(verified.identity[key], claims[key]);
+      assert.equal(identity[key], claims[key]);
+    }
+    assert.equal([...sanitized.headers.values()].includes("spoofed"), false);
+  }
+});
+
+test("malformed optional signed correlation fields reject the credential", async () => {
+  for (const key of ["editorSessionId", "connectionAttemptId"]) {
+    for (const value of [null, "", 123, "token=secret", "a".repeat(300)]) {
+      await expectAuthError(verifyConnectionRequest({
+        request: makeRequest(await mintToken({ [key]: value })),
+        room, authKeys: { [site]: secret }, nowSeconds,
+      }), 401, "invalid_claims");
+    }
+  }
+});
