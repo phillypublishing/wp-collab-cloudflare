@@ -2,12 +2,12 @@
 /**
  * Plugin Name: WP Collab Cloudflare
  * Description: Routes Gutenberg real-time collaboration through a Cloudflare Workers relay instead of HTTP polling.
- * Version: 0.5.14
+ * Version: 0.5.15
  */
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WP_COLLAB_CF_VERSION', '0.5.14' );
+define( 'WP_COLLAB_CF_VERSION', '0.5.15' );
 
 require_once __DIR__ . '/includes/compatibility/version-policy.php';
 require_once __DIR__ . '/includes/compatibility/memberpress.php';
@@ -1060,14 +1060,17 @@ function wp_collab_cf_enqueue_scripts( $hook ) {
 	}
 
 	$asset = require $asset_file;
+	$dependencies = array_merge( $asset['dependencies'], array( 'wp-data', 'wp-notices' ) );
+	// Older Gutenberg exposes Yjs through wp-sync. Newer versions pass it to
+	// the provider; requiring an unregistered handle would block this script.
+	if ( wp_script_is( 'wp-sync', 'registered' ) ) {
+		$dependencies[] = 'wp-sync';
+	}
 
 	wp_enqueue_script(
 		'wp-collab-cf',
 		plugin_dir_url( __FILE__ ) . 'build/index.js',
-		array_merge(
-			$asset['dependencies'],
-			array( 'wp-data', 'wp-notices', 'wp-sync' )
-		),
+		array_values( array_unique( $dependencies ) ),
 		$asset['version'],
 		array( 'in_footer' => false )
 	);
