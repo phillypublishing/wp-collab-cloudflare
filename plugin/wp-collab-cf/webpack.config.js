@@ -7,8 +7,8 @@ module.exports = {
 		...( defaultConfig.resolve || {} ),
 		alias: {
 			...( defaultConfig.resolve?.alias || {} ),
-			// Point 'yjs' imports to a tiny shim that reads from globalThis.Yjs
-			// at runtime, avoiding bundling a second copy of the library.
+			// Share the editor's Yjs module, supplied when the provider is created,
+			// instead of bundling a second copy of the library.
 			yjs: path.resolve( __dirname, 'src/yjs-shim.js' ),
 		},
 	},

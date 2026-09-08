@@ -1,6 +1,6 @@
 {
   "name": "wp-collab-cloudflare-plugin",
-  "version": "0.5.14",
+  "version": "0.5.15",
   "private": true,
   "scripts": {
     "build": "wp-scripts build",
@@ -14,6 +14,9 @@
     "yjs": "^13.6.14"
   },
   "devDependencies": {
-    "@wordpress/scripts": "^30.0.0"
+    "@wordpress/scripts": "^30.0.0",
+    "lib0": "0.2.117",
+    "webpack": "5.105.4",
+    "y-protocols": "1.0.7"
   }
 }

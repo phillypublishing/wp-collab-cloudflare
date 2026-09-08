@@ -2,6 +2,7 @@
 import { addFilter } from '@wordpress/hooks';
 import apiFetch from '@wordpress/api-fetch';
 import YProvider from 'y-partyserver/provider';
+import { setYjsModule } from './yjs-shim';
 
 import {
 	createProviderStatusBridge,
@@ -189,15 +190,24 @@ class AuthenticatedWebSocket extends globalThis.WebSocket {
 if ( config.wsUrl && config.tokenUrl ) {
 	addFilter( 'sync.providers', 'wp-collab-cf/websocket-provider', () => {
 		return [
-			async ( { objectType, objectId, ydoc, awareness } ) => {
-				const Y = window.wp?.sync?.Y;
+			async ( {
+				objectType,
+				objectId,
+				ydoc,
+				awareness,
+				Y: providerY,
+			} ) => {
+				// Gutenberg #81999 passes Yjs directly; older versions expose it
+				// as wp.sync.Y. Resolve it here, after the editor has initialized.
+				const Y = providerY || window.wp?.sync?.Y;
 				if ( ! Y ) {
 					// eslint-disable-next-line no-console
 					console.error(
-						'WP Collab CF: wp.sync.Y not found — wp-sync may not be loaded.'
+						'WP Collab CF: no Yjs module available. Expected the Y provider option or the legacy wp.sync.Y global.'
 					);
 					return noOpProvider();
 				}
+				setYjsModule( Y );
 
 				if ( ! isSupportedSyncObject( objectType, objectId ) ) {
 					// WordPress performs authoritative permission checks. Skip

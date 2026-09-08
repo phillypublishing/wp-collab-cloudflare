@@ -1,9 +1,12 @@
-// Shim that re-exports WordPress's bundled Yjs (exposed as wp.sync.Y by wp-sync).
-// This prevents bundling a duplicate copy of the library.
-// Only needed for y-protocols/awareness which imports 'yjs' for type annotations.
-const Y = window.wp?.sync?.Y || {};
-export default Y;
-export const Doc = Y.Doc;
-export const applyUpdate = Y.applyUpdate;
-export const encodeStateVector = Y.encodeStateVector;
-export const encodeStateAsUpdate = Y.encodeStateAsUpdate;
+// Webpack aliases yjs here so y-partyserver and y-protocols share the editor's
+// module instead of bundling a second Yjs implementation. Their Yjs calls run
+// inside functions, so initialize these live bindings before provider creation.
+// Recheck that ordering and these exports when upgrading either dependency.
+export let Doc;
+export let applyUpdate;
+export let encodeStateVector;
+export let encodeStateAsUpdate;
+
+export function setYjsModule( Y ) {
+	( { Doc, applyUpdate, encodeStateVector, encodeStateAsUpdate } = Y );
+}

@@ -609,4 +609,54 @@ exec(
 );
 rtc_diagnostics_assert_same( 0, $default_logging_exit_code, 'The isolated default-disabled credential logging contract failed.' );
 
+// Exercise the real enqueue function, including runs before the release build.
+function wp_script_is( $handle, $status ) {
+	global $rtc_sync_registered;
+	rtc_diagnostics_assert_same( 'wp-sync', $handle, 'Only the legacy sync handle needs detection.' );
+	rtc_diagnostics_assert_same( 'registered', $status, 'Detect registration before enqueueing.' );
+	return $rtc_sync_registered;
+}
+function plugin_dir_url( $file ) {
+	return 'https://example.test/wp-content/plugins/wp-collab-cf/';
+}
+function wp_enqueue_script( $handle, $src, $dependencies, $version, $args ) {
+	global $rtc_enqueued_scripts;
+	$rtc_enqueued_scripts[] = compact( 'handle', 'dependencies' );
+}
+function wp_localize_script( $handle, $name, $data ) {}
+
+$rtc_asset_file = dirname( __DIR__ ) . '/build/index.asset.php';
+if ( ! file_exists( $rtc_asset_file ) ) {
+	$rtc_created_build_directory = ! is_dir( dirname( $rtc_asset_file ) );
+	if ( $rtc_created_build_directory ) {
+		mkdir( dirname( $rtc_asset_file ), 0777, true );
+	}
+	file_put_contents( $rtc_asset_file, "<?php return array( 'dependencies' => array( 'wp-hooks', 'wp-api-fetch' ), 'version' => 'enqueue-test' );" );
+	register_shutdown_function(
+		function () use ( $rtc_asset_file, $rtc_created_build_directory ) {
+			unlink( $rtc_asset_file );
+			if ( $rtc_created_build_directory ) {
+				rmdir( dirname( $rtc_asset_file ) );
+			}
+		}
+	);
+}
+$rtc_asset = require $rtc_asset_file;
+foreach ( array( true, false ) as $rtc_sync_registered ) {
+	$rtc_enqueued_scripts = array();
+	wp_collab_cf_enqueue_scripts( 'edit.php' );
+	rtc_diagnostics_assert_same( 0, count( $rtc_enqueued_scripts ), 'Do not enqueue outside the editor.' );
+	foreach ( array( 'post.php', 'post-new.php' ) as $rtc_editor_hook ) {
+		wp_collab_cf_enqueue_scripts( $rtc_editor_hook );
+	}
+	rtc_diagnostics_assert_same( 2, count( $rtc_enqueued_scripts ), 'Both editor screens must enqueue.' );
+	foreach ( $rtc_enqueued_scripts as $rtc_script ) {
+		rtc_diagnostics_assert_same( 'wp-collab-cf', $rtc_script['handle'], 'Preserve the plugin handle.' );
+		rtc_diagnostics_assert_same( $rtc_sync_registered, in_array( 'wp-sync', $rtc_script['dependencies'], true ), 'Only require wp-sync when registered.' );
+		foreach ( array_merge( $rtc_asset['dependencies'], array( 'wp-data', 'wp-notices' ) ) as $rtc_dependency ) {
+			rtc_diagnostics_assert_same( true, in_array( $rtc_dependency, $rtc_script['dependencies'], true ), 'Preserve dependency ' . $rtc_dependency );
+		}
+	}
+}
+
 echo "RTC diagnostics PHP contract passed.\n";
