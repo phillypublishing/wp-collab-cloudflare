@@ -7,7 +7,7 @@ const DEFAULT_LIMITS = Object.freeze({
   maxUpdateBytes: 1_500_000,
   maxDocumentBytes: 1_500_000,
   rateWindowMilliseconds: 10_000,
-  maxMessagesPerWindow: 200,
+  maxMessagesPerWindow: 1_000,
   maxBytesPerWindow: 4_194_304,
 });
 

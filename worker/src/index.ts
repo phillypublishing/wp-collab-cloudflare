@@ -34,8 +34,10 @@ import {
   recordConnectionError,
   recordConnectionOpened,
   recordConnectionRejected,
+  recordConnectionResourceLimit,
   recordResourceLimit,
 } from "./observability.js";
+import type { RateLimitDiagnostics } from "./observability.js";
 
 const SESSION_EXPIRY_STATE_KEY = "__wpCollabSessionExpires";
 const LEGACY_AUTH_EXPIRY_STATE_KEY = "__wpCollabAuthExpires";
@@ -104,16 +106,22 @@ export class Collaboration extends YServer {
   }
 
   private rejectForResourceLimit(
-    connection: Connection,
+    connection: Connection<CollaborationConnectionState>,
     event: string,
-    observed?: number,
-    limit?: number
+    details: RateLimitDiagnostics & { observed?: number; limit?: number } = {}
   ): void {
+    const { observed, limit } = details;
     logSecurityEvent(event, {
       ...(observed === undefined ? {} : { observed }),
       ...(limit === undefined ? {} : { limit }),
     });
     recordResourceLimit(this.metrics, event, observed, limit);
+    recordConnectionResourceLimit(
+      this.metrics,
+      connectionLifecycleContext(connection, this.name),
+      event,
+      details
+    );
     connection.close(RESOURCE_LIMIT_CLOSE_CODE, "Room resource limit exceeded");
   }
 
@@ -174,8 +182,7 @@ export class Collaboration extends YServer {
           this.rejectForResourceLimit(
             connection,
             "connection_limit_exceeded",
-            connectionCount,
-            this.resourceLimits.maxConnectionsPerRoom
+            { observed: connectionCount, limit: this.resourceLimits.maxConnectionsPerRoom }
           );
           return;
         }
@@ -226,8 +233,7 @@ export class Collaboration extends YServer {
       this.rejectForResourceLimit(
         connection,
         "message_limit_exceeded",
-        byteLength,
-        this.resourceLimits.maxMessageBytes
+        { observed: byteLength, limit: this.resourceLimits.maxMessageBytes }
       );
       return;
     }
@@ -247,16 +253,17 @@ export class Collaboration extends YServer {
       this.rejectForResourceLimit(
         connection,
         "update_limit_exceeded",
-        update.byteLength,
-        this.resourceLimits.maxUpdateBytes
+        { observed: update.byteLength, limit: this.resourceLimits.maxUpdateBytes }
       );
       return;
     }
 
+    const nowMilliseconds = Date.now();
     const budget = consumeMessageBudget(
       connection.state?.[RATE_STATE_KEY],
       this.resourceLimits,
-      byteLength
+      byteLength,
+      nowMilliseconds
     );
     if (
       !trySetConnectionState(connection, (state) => ({
@@ -271,9 +278,22 @@ export class Collaboration extends YServer {
       return;
     }
     if (!budget.allowed) {
+      const messageRateExceeded = budget.reason === "message_rate_exceeded";
       this.rejectForResourceLimit(
         connection,
-        budget.reason || "rate_limit_exceeded"
+        budget.reason || "rate_limit_exceeded",
+        {
+          observed: messageRateExceeded
+            ? budget.state.messagesInWindow
+            : budget.state.bytesInWindow,
+          limit: messageRateExceeded
+            ? this.resourceLimits.maxMessagesPerWindow
+            : this.resourceLimits.maxBytesPerWindow,
+          messagesInWindow: budget.state.messagesInWindow,
+          bytesInWindow: budget.state.bytesInWindow,
+          windowElapsedMilliseconds: nowMilliseconds - budget.state.windowStartedAt,
+          windowMilliseconds: this.resourceLimits.rateWindowMilliseconds,
+        }
       );
       return;
     }
@@ -291,8 +311,7 @@ export class Collaboration extends YServer {
             this.rejectForResourceLimit(
               connection,
               "document_limit_exceeded",
-              merged.byteLength,
-              this.resourceLimits.maxDocumentBytes
+              { observed: merged.byteLength, limit: this.resourceLimits.maxDocumentBytes }
             );
             return;
           }

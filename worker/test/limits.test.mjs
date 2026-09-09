@@ -40,7 +40,7 @@ test("parseResourceLimits supplies bounded production defaults", () => {
   assert.equal(limits.maxUpdateBytes, 1_500_000);
   assert.equal(limits.maxDocumentBytes, 1_500_000);
   assert.equal(limits.rateWindowMilliseconds, 10_000);
-  assert.equal(limits.maxMessagesPerWindow, 200);
+  assert.equal(limits.maxMessagesPerWindow, 1_000);
   assert.equal(limits.maxBytesPerWindow, 4_194_304);
 });
 
