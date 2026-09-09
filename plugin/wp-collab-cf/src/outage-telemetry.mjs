@@ -148,8 +148,9 @@ export function createOutageReporter( {
 		uuid,
 		monotonic,
 		duration,
-		schedule,
-		cancel,
+		// Native browser timers must not receive this reporter as `this`.
+		schedule: ( callback, ms ) => schedule( callback, ms ),
+		cancel: ( timerId ) => cancel( timerId ),
 		record,
 		flush,
 		affectedEntities: () => [ ...affected.values() ],

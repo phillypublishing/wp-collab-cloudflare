@@ -24,12 +24,26 @@ function fixture( send = async () => {}, context = {} ) {
 		monotonic: () => time,
 		uuid: () =>
 			`00000000-0000-4000-8000-${ String( ++id ).padStart( 12, '0' ) }`,
-		setTimeout: ( fn, ms ) => {
+		// Browser timers reject a reporter object as their receiver. Arrow
+		// functions hid that failure in the original fixture.
+		setTimeout( fn, ms ) {
+			assert.equal(
+				this,
+				undefined,
+				'timer must be called without a receiver'
+			);
 			const key = ++id;
 			timers.set( key, { fn, due: time + ms } );
 			return key;
 		},
-		clearTimeout: ( key ) => timers.delete( key ),
+		clearTimeout( key ) {
+			assert.equal(
+				this,
+				undefined,
+				'timer must be cleared without a receiver'
+			);
+			timers.delete( key );
+		},
 	} );
 	return {
 		reporter,
@@ -94,6 +108,10 @@ test( 'outage reports preserve browser close, recovery and sync as distinct mile
 	provider.emit( 'sync', true );
 	await reporter.flush();
 	const events = batches.flatMap( ( b ) => b.events );
+	assert.equal(
+		events.find( ( e ) => e.event === 'socket_closed' )?.closeCode,
+		1006
+	);
 	assert.ok( events.some( ( e ) => e.event === 'outage_threshold' ) );
 	assert.equal(
 		events.find( ( e ) => e.event === 'outage_recovered' ).durationMs,
