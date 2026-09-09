@@ -12,6 +12,7 @@ import {
   recordConnectionError,
   recordConnectionOpened,
   recordConnectionRejected,
+  recordConnectionResourceLimit,
   recordResourceLimit,
 } from "../src/observability.js";
 
@@ -47,6 +48,83 @@ const lifecycleContext = {
   room: "v1.0123456789abcdef0123456789abcdef.1.cG9zdFR5cGUvcG9zdA.MzA1ODA2",
   connectionId: "connection_abc123",
 };
+
+test("resource-limit diagnostics correlate the rejected window without changing aggregate counts", () => {
+  const dataset = recordingDataset();
+  const messages = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => messages.push(JSON.parse(message));
+  const context = {
+    ...lifecycleContext,
+    editorSessionId: "01234567-89ab-4def-8123-456789abcdef",
+    connectionAttemptId: "abcdef01-2345-6789-abcd-ef0123456789",
+  };
+  const details = {
+    observed: 1001,
+    limit: 1000,
+    messagesInWindow: 1001,
+    bytesInWindow: 64064,
+    windowElapsedMilliseconds: 1250,
+    windowMilliseconds: 10000,
+  };
+  try {
+    recordResourceLimit(dataset, "message_rate_exceeded", 1001, 1000);
+    recordConnectionResourceLimit(dataset, context, "message_rate_exceeded", details);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(dataset.points.filter((point) => point.blobs[0] === "resource_limit").length, 1);
+  const diagnostic = dataset.points[1];
+  assert.deepEqual(diagnostic.indexes, [context.connectionId]);
+  assert.deepEqual(diagnostic.blobs, [
+    "connection_resource_limit", "message_rate_exceeded",
+    context.siteId, context.blogId, context.objectType, context.objectId,
+    context.userId, context.room, context.connectionId,
+    context.editorSessionId, context.connectionAttemptId,
+  ]);
+  assert.deepEqual(diagnostic.doubles, [1, 1001, 1000, 0, 0, 0, 0, 1001, 64064, 1250, 10000]);
+  assert.deepEqual(messages, [{
+    service: "wp-collab-cloudflare",
+    event: "connection_resource_limit",
+    status: "message_rate_exceeded",
+    ...context,
+    durationMilliseconds: 0,
+    roomConnectionCount: 0,
+    ...details,
+  }]);
+});
+
+test("resource-limit diagnostics sanitize fields and tolerate unavailable logging", () => {
+  const dataset = recordingDataset();
+  const messages = [];
+  const sensitive = "token=secret document=private-content";
+  const originalWarn = console.warn;
+  console.warn = (message) => messages.push(message);
+  try {
+    recordConnectionResourceLimit(dataset, {
+      ...lifecycleContext, userId: sensitive, connectionId: sensitive,
+      editorSessionId: sensitive, connectionAttemptId: sensitive,
+      document: sensitive,
+    }, sensitive, {
+      observed: Infinity, limit: -1, messagesInWindow: NaN,
+      bytesInWindow: sensitive, windowElapsedMilliseconds: -100,
+      windowMilliseconds: Infinity, document: sensitive,
+    });
+    assert.equal(JSON.stringify([dataset.points, messages]).includes(sensitive), false);
+    assert.equal(dataset.points[0].blobs[1], "unknown");
+    assert.deepEqual(dataset.points[0].doubles, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert.deepEqual(dataset.points[0].indexes, ["wp-collab-cloudflare"]);
+    console.warn = () => { throw new Error("logging unavailable"); };
+    const unavailable = { writeDataPoint() { throw new Error("analytics unavailable"); } };
+    for (const target of [undefined, unavailable]) {
+      assert.doesNotThrow(() => recordConnectionResourceLimit(
+        target, lifecycleContext, "message_rate_exceeded", { observed: 1001, limit: 1000 }
+      ));
+    }
+  } finally {
+    console.warn = originalWarn;
+  }
+});
 
 test("observability helpers write the bounded count-only schema", () => {
   const dataset = recordingDataset();

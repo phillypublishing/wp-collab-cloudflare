@@ -44,7 +44,7 @@ function createRuntimeOptions(persistPath, limitOverrides = {}) {
       COLLAB_MAX_UPDATE_BYTES: "1500000",
       COLLAB_MAX_DOCUMENT_BYTES: "1500000",
       COLLAB_RATE_WINDOW_SECONDS: "10",
-      COLLAB_MAX_MESSAGES_PER_WINDOW: "200",
+      COLLAB_MAX_MESSAGES_PER_WINDOW: "1000",
       COLLAB_MAX_BYTES_PER_WINDOW: "4194304",
       ...limitOverrides,
     },
@@ -894,6 +894,79 @@ test("workerd scrubs legacy Yjs storage when a room activates", runtimeTestOptio
   });
 });
 
+
+for (const reason of ["message_rate_exceeded", "byte_rate_exceeded"]) {
+  test(`workerd records the rejected traffic window for ${reason}`, runtimeTestOptions, async (t) => {
+    const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-rate-"));
+    let output = "";
+    const runtime = new Miniflare({
+      ...createRuntimeOptions(persistPath, {
+        COLLAB_MAX_MESSAGES_PER_WINDOW: "10",
+        COLLAB_MAX_MESSAGE_BYTES: "65546",
+        COLLAB_MAX_UPDATE_BYTES: "65536",
+        COLLAB_MAX_DOCUMENT_BYTES: "65536",
+        COLLAB_MAX_BYTES_PER_WINDOW: "65546",
+      }),
+      handleRuntimeStdio(stdout, stderr) {
+        stdout.on("data", (chunk) => { output += chunk.toString(); });
+        stderr.on("data", (chunk) => { output += chunk.toString(); });
+      },
+    });
+    t.after(async () => {
+      await runtime.dispose();
+      await rm(persistPath, { recursive: true, force: true });
+    });
+    const correlation = {
+      editorSessionId: "01234567-89ab-4def-8123-456789abcdef",
+      connectionAttemptId: "abcdef01-2345-6789-abcd-ef0123456789",
+    };
+    const peer = await connect(runtime);
+    const { socket, close } = await connect(runtime, {
+      correlation, expectedCloseDescription: reason,
+    });
+    const doc = new Y.Doc();
+    t.after(() => doc.destroy());
+    doc.getText("content").insert(0, "private-document-content".repeat(1600));
+    const frame = reason === "message_rate_exceeded"
+      ? new Uint8Array([3])
+      : syncMessage(2, Y.encodeStateAsUpdate(doc));
+    const count = reason === "message_rate_exceeded" ? 11 : 2;
+    for (let i = 0; i < count; i += 1) socket.send(frame);
+    assert.equal((await close)[0], 4008);
+    assert.equal(peer.socket.readyState, WebSocket.OPEN);
+    const deadline = Date.now() + 5000;
+    while (!output.includes('"event":"connection_closed"') && Date.now() < deadline) {
+      await delay(10);
+    }
+    const events = output.split("\n").flatMap((line) => {
+      const jsonStart = line.indexOf('{"service":"wp-collab-cloudflare"');
+      if (jsonStart < 0) return [];
+      try { return [JSON.parse(line.slice(jsonStart))]; } catch { return []; }
+    });
+    const diagnostic = events.find((event) => event.event === "connection_resource_limit");
+    assert.ok(diagnostic, "the limit close must produce attributable diagnostics");
+    const authenticated = events.find((event) =>
+      event.event === "connection_authenticated" &&
+      event.connectionAttemptId === correlation.connectionAttemptId
+    );
+    assert.equal(diagnostic.status, reason);
+    assert.equal(diagnostic.connectionId, authenticated.connectionId);
+    assert.equal(diagnostic.editorSessionId, correlation.editorSessionId);
+    assert.equal(diagnostic.connectionAttemptId, correlation.connectionAttemptId);
+    assert.equal(diagnostic.objectId, "123");
+    assert.equal(diagnostic.userId, "7");
+    assert.equal(diagnostic.messagesInWindow, count);
+    assert.equal(diagnostic.bytesInWindow, count * frame.byteLength);
+    assert.equal(diagnostic.observed, reason === "message_rate_exceeded" ? count : count * frame.byteLength);
+    assert.equal(diagnostic.limit, reason === "message_rate_exceeded" ? 10 : 65546);
+    assert.equal(diagnostic.windowMilliseconds, 10000);
+    assert.ok(Number.isSafeInteger(diagnostic.windowElapsedMilliseconds));
+    assert.ok(diagnostic.windowElapsedMilliseconds >= 0 && diagnostic.windowElapsedMilliseconds < 10000);
+    assert.equal(output.includes("wp-collab-token."), false);
+    assert.equal(output.includes("private-document-content"), false);
+    await closeSocket(peer.socket, "rate-limit surviving peer");
+  });
+}
 
 test("workerd records correlated setup milestones and retains correlation through close", runtimeTestOptions, async (t) => {
   const persistPath = await mkdtemp(path.join(tmpdir(), "wp-collab-setup-"));

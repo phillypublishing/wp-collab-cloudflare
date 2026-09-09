@@ -10,6 +10,7 @@ const METRIC_EVENTS = new Set([
   "connection_error",
   "connection_opened",
   "connection_rejected",
+  "connection_resource_limit",
   "resource_limit",
 ]);
 const METRIC_STATUSES = new Set([
@@ -201,6 +202,29 @@ export function recordResourceLimit(dataset, status, observed, limit) {
 }
 
 /**
+ * @typedef {{
+ *   messagesInWindow?: number,
+ *   bytesInWindow?: number,
+ *   windowElapsedMilliseconds?: number,
+ *   windowMilliseconds?: number
+ * }} RateLimitDiagnostics
+ */
+
+/**
+ * Keep this distinct from the aggregate resource_limit event so existing
+ * pressure queries count each rejection once. Context must come from the
+ * verified connection attachment, never from a message or caller-selected ID.
+ *
+ * @param {AnalyticsEngineDataset | undefined} dataset
+ * @param {ConnectionLifecycleContext} context
+ * @param {string} status
+ * @param {RateLimitDiagnostics & { observed?: number, limit?: number }} details
+ */
+export function recordConnectionResourceLimit(dataset, context, status, details) {
+  recordConnectionLifecycle(dataset, "connection_resource_limit", status, context, details);
+}
+
+/**
  * @param {AnalyticsEngineDataset | undefined} dataset
  * @param {string} event
  * @param {string} status
@@ -235,7 +259,9 @@ function recordMetric(dataset, event, status, observed, limit) {
  * @param {string} event
  * @param {string} status
  * @param {ConnectionLifecycleContext} context
- * @param {{
+ * @param {RateLimitDiagnostics & {
+ *   observed?: number,
+ *   limit?: number,
  *   closeCode?: number,
  *   durationMilliseconds?: number,
  *   wasClean?: boolean,
@@ -250,6 +276,14 @@ function recordConnectionLifecycle(dataset, event, status, context, details) {
   const durationMilliseconds = boundedNumber(details.durationMilliseconds);
   const roomConnectionCount = boundedNumber(details.roomConnectionCount);
   const wasClean = details.wasClean === true;
+  const resourceDetails = event === "connection_resource_limit" ? {
+    observed: boundedNumber(details.observed),
+    limit: boundedNumber(details.limit),
+    messagesInWindow: boundedNumber(details.messagesInWindow),
+    bytesInWindow: boundedNumber(details.bytesInWindow),
+    windowElapsedMilliseconds: boundedNumber(details.windowElapsedMilliseconds),
+    windowMilliseconds: boundedNumber(details.windowMilliseconds),
+  } : undefined;
 
   const logFields = {
     service: "wp-collab-cloudflare",
@@ -260,6 +294,7 @@ function recordConnectionLifecycle(dataset, event, status, context, details) {
     ...(closeCode > 0 ? { closeCode } : {}),
     ...(details.wasClean === undefined ? {} : { wasClean }),
     roomConnectionCount,
+    ...resourceDetails,
   };
   try {
     console.warn(JSON.stringify(logFields));
@@ -295,12 +330,19 @@ function recordConnectionLifecycle(dataset, event, status, context, details) {
       ],
       doubles: [
         1,
-        0,
-        0,
+        resourceDetails?.observed || 0,
+        resourceDetails?.limit || 0,
         closeCode,
         durationMilliseconds,
         wasClean ? 1 : 0,
         roomConnectionCount,
+        // Append traffic diagnostics; double1-7 retain their meanings.
+        ...(resourceDetails ? [
+          resourceDetails.messagesInWindow,
+          resourceDetails.bytesInWindow,
+          resourceDetails.windowElapsedMilliseconds,
+          resourceDetails.windowMilliseconds,
+        ] : []),
       ],
     });
   } catch {

@@ -51,8 +51,13 @@ The application limits are public Wrangler variables:
 | `COLLAB_MAX_UPDATE_BYTES` | 1,500,000 | Maximum Yjs sync step-two/update payload; keep equal to the document limit so WordPress can hydrate an empty relay |
 | `COLLAB_MAX_DOCUMENT_BYTES` | 1,500,000 | Maximum compact merged Yjs update held in memory for a room |
 | `COLLAB_RATE_WINDOW_SECONDS` | 10 | Fixed per-connection rate window |
-| `COLLAB_MAX_MESSAGES_PER_WINDOW` | 200 | Frames per connection per window |
+| `COLLAB_MAX_MESSAGES_PER_WINDOW` | 1,000 | Frames per connection per window |
 | `COLLAB_MAX_BYTES_PER_WINDOW` | 4,194,304 | Aggregate bytes per connection per window |
+
+The message-count budget allows bursts of up to 1,000 incoming frames per
+connection in each ten-second window. It bounds runaway protocol traffic and
+broadcast work; editors do not share one message-count budget. This threshold
+is an operational starting point, not a measured capacity guarantee.
 
 `COLLAB_MAX_UPDATE_BYTES` must equal `COLLAB_MAX_DOCUMENT_BYTES`, and
 `COLLAB_MAX_MESSAGE_BYTES` must leave room for the Yjs sync frame around that
@@ -278,8 +283,8 @@ deployment; local tests do not enable production telemetry.
 
 ### Worker connection lifecycle
 
-The Worker keeps authentication failures and resource-limit events aggregate,
-but emits attributable JSON lifecycle events after authentication succeeds.
+The Worker keeps authentication failures and `resource_limit` counts aggregate,
+and emits attributable JSON lifecycle events after authentication succeeds.
 Named staging and production environments set Workers Logs head sampling to
 `1`, so an individual authenticated, open, close, or runtime-error event is not
 intentionally discarded before ingestion. Automatic invocation logs are
@@ -299,6 +304,18 @@ Close events also include the numeric close code, a bounded status, and
 `wasClean`. The Worker never logs the bearer token, signing key, request
 headers, Origin, document content, Yjs messages, raw exception text, or raw
 client-supplied close reason.
+
+Each resource rejection also emits `connection_resource_limit`, carrying the
+specific limit code and verified connection identity. Message-rate and byte-rate
+rejections include `messagesInWindow`, `bytesInWindow`,
+`windowElapsedMilliseconds`, and the configured `windowMilliseconds`. Counts
+and bytes include the rejected message. `observed` and `limit` use messages for
+message-rate rejections and bytes for byte-rate rejections, in both the aggregate
+and attributable events. Other rejection paths leave window fields at zero
+(not applicable); these are not lifetime connection totals. Identity can be
+`unknown` if the connection attachment could not be stored. Existing
+`resource_limit` queries still count each rejection once; do not sum both event
+types to count rejections.
 
 These identifiers come only from a successfully verified WordPress credential.
 The edge handler strips the credential-bearing subprotocol, replaces any
@@ -323,7 +340,7 @@ events extend it with reviewed, bounded operational identifiers:
 | Column | Meaning |
 | --- | --- |
 | `index1` | Constant `wp-collab-cloudflare` for aggregate events; server-generated connection correlation ID for lifecycle events |
-| `blob1` | Allowlisted event, including `connection_authenticated`, `connection_opened`, `connection_closed`, and `connection_error` |
+| `blob1` | Allowlisted event, including `connection_authenticated`, `connection_opened`, `connection_closed`, `connection_error`, and `connection_resource_limit` |
 | `blob2` | Allowlisted status or rejection/limit code |
 | `blob3` | Verified site ID for lifecycle events |
 | `blob4` | Verified WordPress blog ID for lifecycle events |
@@ -335,12 +352,20 @@ events extend it with reviewed, bounded operational identifiers:
 | `blob10` | Optional WordPress-signed browser `editorSessionId` UUID |
 | `blob11` | Optional WordPress-signed browser `connectionAttemptId` UUID |
 | `double1` | Event count, always `1` |
-| `double2` | Non-negative observed byte/connection count when applicable, otherwise `0` |
+| `double2` | Non-negative observed byte/message/connection count when applicable, otherwise `0` |
 | `double3` | Non-negative configured limit when applicable, otherwise `0` |
 | `double4` | WebSocket close code for close events |
 | `double5` | Connection duration in milliseconds |
 | `double6` | `1` when a close was clean, otherwise `0` |
 | `double7` | Room connection count observed at the lifecycle boundary |
+| `double8` | Messages in the rejected rate window, including the rejected message (`connection_resource_limit` only) |
+| `double9` | Bytes in that window, including the rejected message (`connection_resource_limit` only) |
+| `double10` | Elapsed window time in milliseconds at rejection (`connection_resource_limit` only) |
+| `double11` | Configured rate-window length in milliseconds (`connection_resource_limit` only) |
+
+The diagnostic event leaves `double4`–`double7` at zero; join it to the ordinary
+connection lifecycle using `blob9` for close code, duration, and collaborator
+counts. Non-rate rejections leave `double8`–`double11` at zero.
 
 Keep this schema closed; use `unknown` for any identifier or code that does not
 match its reviewed shape. Never add arbitrary request strings, error messages,
@@ -406,13 +431,19 @@ SELECT
   blob7 AS user_id,
   blob8 AS room_id,
   blob9 AS connection_id,
+  double2 AS observed,
+  double3 AS configured_limit,
   double4 AS close_code,
   double5 AS duration_ms,
   double6 AS was_clean,
-  double7 AS room_connection_count
+  double7 AS room_connection_count,
+  double8 AS messages_in_window,
+  double9 AS bytes_in_window,
+  double10 AS window_elapsed_ms,
+  double11 AS configured_window_ms
 FROM wp_collab_cloudflare_production
 WHERE timestamp > NOW() - INTERVAL '1' HOUR
-  AND blob1 IN ('connection_authenticated', 'connection_opened', 'connection_closed', 'connection_error')
+  AND blob1 IN ('connection_authenticated', 'connection_opened', 'connection_closed', 'connection_error', 'connection_resource_limit')
   AND blob6 = '305806'
 ORDER BY timestamp ASC
 ```
