@@ -2,6 +2,11 @@ import { YServer } from "y-partyserver";
 import { routePartykitRequest } from "partyserver";
 import type { Connection, ConnectionContext, WSMessage } from "partyserver";
 import * as Y from "yjs";
+import {
+  handleAwarenessMessage,
+  isAwarenessMessage,
+  prepareAwarenessDeparture,
+} from "./awareness.js";
 
 import {
   AuthError,
@@ -331,7 +336,24 @@ export class Collaboration extends YServer {
       }
     }
 
-    await super.onMessage(connection, message);
+    // Native Yjs awareness frames start with protocol tag 1. Ordinary document
+    // updates do not need an ownership scan or additional attachment writes.
+    if (!isAwarenessMessage(message)) {
+      super.onMessage(connection, message);
+      return;
+    }
+    const failures = handleAwarenessMessage(
+      connection, [...this.getConnections()], this.document.awareness,
+      () => super.onMessage(connection, message)
+    );
+    for (const failed of failures) {
+      if (failed.id === connection.id) {
+        this.rejectForResourceLimit(connection, "awareness_attachment_failed");
+      } else {
+        // Preserve a bystander's editor session; retain its last saved clocks.
+        recordResourceLimit(this.metrics, "awareness_attachment_failed");
+      }
+    }
   }
 
   async onClose(
@@ -340,6 +362,7 @@ export class Collaboration extends YServer {
     reason: string,
     wasClean: boolean
   ): Promise<void> {
+    prepareAwarenessDeparture(connection, this.document.awareness);
     await super.onClose(connection, code, reason, wasClean);
     const remainingConnectionCount = countConnections(this.getConnections());
     recordConnectionClosed(

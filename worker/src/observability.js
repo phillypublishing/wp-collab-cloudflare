@@ -15,6 +15,7 @@ const METRIC_EVENTS = new Set([
 ]);
 const METRIC_STATUSES = new Set([
   "abnormal",
+  "awareness_attachment_failed",
   "auth_unavailable",
   "authenticated",
   "byte_rate_exceeded",
