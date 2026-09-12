@@ -11,6 +11,8 @@ import { Miniflare, NoOpLog } from "miniflare";
 import WebSocket from "ws";
 import YProvider from "y-partyserver/provider";
 import * as Y from "yjs";
+import * as awarenessProtocol from "y-protocols/awareness";
+import * as encoding from "lib0/encoding";
 
 const workerRoot = fileURLToPath(new URL("../", import.meta.url));
 const bundlePath = path.join(
@@ -55,6 +57,210 @@ function createRuntimeOptions(persistPath, limitOverrides = {}) {
 function createRuntime(persistPath, limitOverrides = {}) {
   return new Miniflare(createRuntimeOptions(persistPath, limitOverrides));
 }
+
+// Exercise the real close callback with surviving workerd sockets/attachments.
+// Replacing only volatile state models wake; this does not force platform sleep.
+function createPresenceLifecycleRuntime(persistPath) {
+  return new Miniflare({
+    ...createRuntimeOptions(persistPath),
+    scriptPath: path.join(path.dirname(bundlePath), "presence-fixture.mjs"),
+    modulesRules: [{ type: "ESModule", include: ["**/*.js"], fallthrough: true }],
+    script: `
+      import worker, { Collaboration as Base } from "./index.js";
+      export class Collaboration extends Base {
+        async onRequest(request) {
+          if (new URL(request.url).pathname === "/wake") {
+            // Discard PartyServer's cached view in favor of workerd's actual
+            // serialized attachment, so missing clock persistence fails here.
+            for (const connection of this.getConnections()) {
+              const serialized = WebSocket.prototype.deserializeAttachment.call(connection);
+              connection.setState(serialized.__user);
+            }
+            const previous = this.document;
+            this._saveDocument?.cancel();
+            this._document = new previous.constructor();
+            previous.destroy();
+            await this.onStart();
+          }
+          const connections = [...this.getConnections()];
+          return Response.json({
+            connections: connections.length,
+            owners: connections.map(c => c.state?.__ypsAwarenessIds),
+            storageKeys: new URL(request.url).pathname === "/inspect-storage"
+              ? [...(await this.ctx.storage.list()).keys()] : undefined,
+          });
+        }
+      }
+      export default worker;
+    `,
+  });
+}
+
+async function waitForPresenceCondition(predicate, description) {
+  for (let attempt = 0; attempt < 150; attempt += 1) {
+    if (await predicate()) return;
+    await delay(20);
+  }
+  assert.fail(`Timed out waiting for ${description}`);
+}
+
+function awarenessFrame(awareness, ids) {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, 1);
+  encoding.writeVarUint8Array(
+    encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, ids)
+  );
+  return encoding.toUint8Array(encoder);
+}
+
+async function sendAwarenessAndWaitForEcho(socket, frame) {
+  let listener;
+  let timer;
+  try {
+    await new Promise((resolve, reject) => {
+      listener = data => {
+        if (Buffer.from(data).equals(Buffer.from(frame))) resolve();
+      };
+      socket.on("message", listener);
+      timer = setTimeout(() => reject(new Error("awareness echo timed out")), 3000);
+      socket.send(frame);
+    });
+  } finally {
+    clearTimeout(timer);
+    socket.off("message", listener);
+  }
+}
+
+for (const [wake, reuseClient] of [[false, false], [true, false], [false, true], [true, true]]) {
+  test(`disconnected presence disappears${wake ? " after volatile room wake" : " without wake"}${reuseClient ? " on same-client reconnect" : ""}`, runtimeTestOptions, async () => {
+    const persistPath = await mkdtemp(path.join(tmpdir(), "collab-presence-"));
+    const runtime = createPresenceLifecycleRuntime(persistPath);
+    const reporterDoc = new Y.Doc();
+    let reporter;
+    let agent;
+    let agentDoc;
+    let agentAwareness;
+    try {
+      const base = await runtime.ready;
+      reporter = new YProvider(base.host, room, reporterDoc, {
+        connect: false, disableBc: true, party: "collaboration", protocol: "ws",
+        params: async () => ({ token: await mintToken(300) }),
+        WebSocketPolyfill: createAuthenticatedWebSocket([]),
+      });
+      reporter.awareness.setLocalState({ user: { id: 7 } });
+      await reporter.connect();
+      await waitForPresenceCondition(() => reporter.synced, "reporter sync");
+      const namespace = await runtime.getDurableObjectNamespace("Collaboration");
+      const stub = namespace.get(namespace.idFromName(room));
+      const inspect = async (pathname = "/inspect") =>
+        (await stub.fetch(`http://fixture${pathname}`)).json();
+
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        if (!agentDoc) {
+          agentDoc = new Y.Doc();
+          agentAwareness = new awarenessProtocol.Awareness(agentDoc);
+        }
+        ({ socket: agent } = await connect(runtime, {
+          lifetimeSeconds: 300, correlation: { sub: "1195" },
+        }));
+        // Use a noninitial clock: clock-zero removals would not remove this state.
+        agentAwareness.setLocalState({ user: { id: 1195 }, clock: -1 });
+        const staleFrame = awarenessFrame(agentAwareness, [agentDoc.clientID]);
+        for (let clock = 0; clock < 5; clock += 1) {
+          agentAwareness.setLocalState({ user: { id: 1195 }, clock });
+        }
+        agent.send(awarenessFrame(agentAwareness, [agentDoc.clientID]));
+        await waitForPresenceCondition(
+          () => reporter.awareness.getStates().has(agentDoc.clientID), "agent presence"
+        );
+        if (wake) {
+          await inspect("/wake");
+          // A peer may forward all known states after wake. It must not become
+          // the owner of the agent's ID just because server memory was empty.
+          if (cycle === 1) {
+            await sendAwarenessAndWaitForEcho(reporter.ws, staleFrame);
+          } else if (cycle === 2) {
+            await sendAwarenessAndWaitForEcho(reporter.ws,
+              awarenessFrame(reporter.awareness, [...reporter.awareness.getStates().keys()]));
+          }
+        }
+        const closed = once(agent, "close");
+        agent.terminate();
+        await closed;
+        await waitForPresenceCondition(async () => (await inspect()).connections === 1,
+          "server disconnect");
+        await waitForPresenceCondition(
+          () => !reporter.awareness.getStates().has(agentDoc.clientID),
+          "disconnected agent presence to disappear"
+        );
+        assert.deepEqual(reporter.awareness.getLocalState(), { user: { id: 7 } });
+        assert.equal(reporter.awareness.getStates().size, 1, "no accumulated ghost participants");
+        // Delayed forwarding of the departed state must not resurrect it.
+        await sendAwarenessAndWaitForEcho(reporter.ws,
+          awarenessFrame(agentAwareness, [agentDoc.clientID]));
+        assert.equal(reporter.awareness.getStates().size, 1);
+        assert.deepEqual((await inspect("/inspect-storage")).storageKeys, ["__ps_name"], "only PartyServer room metadata is durable");
+        if (!reuseClient) {
+          agentAwareness.destroy(); agentAwareness = undefined;
+          agentDoc.destroy(); agentDoc = undefined;
+        }
+      }
+    } finally {
+      agent?.terminate(); reporter?.destroy(); agentAwareness?.destroy();
+      agentDoc?.destroy(); reporterDoc.destroy();
+      await runtime.dispose();
+      await rm(persistPath, { recursive: true, force: true });
+    }
+  });
+}
+
+test("awareness attachment overflow only closes its sender with resource diagnostics", runtimeTestOptions, async () => {
+  const persistPath = await mkdtemp(path.join(tmpdir(), "collab-awareness-limit-"));
+  let output = "";
+  const runtime = new Miniflare({
+    ...createRuntimeOptions(persistPath),
+    handleRuntimeStdio(stdout, stderr) {
+      stdout.on("data", chunk => { output += chunk.toString(); });
+      stderr.on("data", chunk => { output += chunk.toString(); });
+    },
+  });
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  let bystander;
+  let sender;
+  try {
+    ({ socket: bystander } = await connect(runtime));
+    const connected = await connect(runtime, {
+      correlation: { sub: "1195" }, expectedCloseDescription: "awareness attachment overflow",
+    });
+    sender = connected.socket;
+    // Exceed even the newer 16KiB attachment ceiling, not just the historical
+    // 2KiB limit. The awareness frame itself stays below the message limit.
+    const ids = Array.from({ length: 4000 }, (_, index) => 100000 + index);
+    for (const id of ids) {
+      awareness.states.set(id, { user: { id: 1195 } });
+      awareness.meta.set(id, { clock: 9, lastUpdated: Date.now() });
+    }
+    sender.send(awarenessFrame(awareness, ids));
+    assert.equal((await connected.close)[0], 4008);
+    assert.equal(bystander.readyState, WebSocket.OPEN);
+    await waitForPresenceCondition(() => output.includes('"event":"connection_resource_limit"'),
+      "awareness overflow diagnostics");
+    const events = output.split("\n").flatMap(line => {
+      const offset = line.indexOf('{"service":"wp-collab-cloudflare"');
+      if (offset < 0) return [];
+      try { return [JSON.parse(line.slice(offset))]; } catch { return []; }
+    });
+    const diagnostic = events.find(event => event.event === "connection_resource_limit");
+    assert.equal(diagnostic.status, "awareness_attachment_failed");
+    assert.equal(diagnostic.userId, "1195");
+  } finally {
+    sender?.terminate(); bystander?.terminate();
+    awareness.destroy(); doc.destroy();
+    await runtime.dispose();
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});
 
 function createAttachmentFixtureRuntime(
   persistPath,
