@@ -1,0 +1,52 @@
+diff --git a/node_modules/y-partyserver/dist/provider/index.js b/node_modules/y-partyserver/dist/provider/index.js
+index dd084d9..1e5088c 100644
+--- a/node_modules/y-partyserver/dist/provider/index.js
++++ b/node_modules/y-partyserver/dist/provider/index.js
+@@ -220,6 +220,8 @@ var WebsocketProvider = class extends Observable {
+   _updateHandler;
+   _awarenessUpdateHandler;
+   _unloadHandler;
++  _pagehideHandler;
++  _pageshowHandler;
+   constructor(
+     serverUrl,
+     roomname,
+@@ -304,9 +306,21 @@ var WebsocketProvider = class extends Observable {
+         "window unload"
+       );
+     };
+-    if (typeof window !== "undefined")
+-      window.addEventListener("unload", this._unloadHandler);
+-    else if (typeof process !== "undefined" && typeof process.on === "function")
++    let cachedAwarenessState = null;
++    this._pagehideHandler = (event) => {
++      cachedAwarenessState = event.persisted ? this.awareness.getLocalState() : null;
++      this._unloadHandler();
++    };
++    this._pageshowHandler = (event) => {
++      if (event.persisted && cachedAwarenessState !== null) {
++        this.awareness.setLocalState(cachedAwarenessState);
++        cachedAwarenessState = null;
++      }
++    };
++    if (typeof window !== "undefined") {
++      window.addEventListener("pagehide", this._pagehideHandler);
++      window.addEventListener("pageshow", this._pageshowHandler);
++    } else if (typeof process !== "undefined" && typeof process.on === "function")
+       process.on("exit", this._unloadHandler);
+     awareness.on("change", this._awarenessUpdateHandler);
+     clearInterval(awareness._checkInterval);
+@@ -328,9 +342,10 @@ var WebsocketProvider = class extends Observable {
+   destroy() {
+     if (this._resyncInterval !== 0) clearInterval(this._resyncInterval);
+     this.disconnect();
+-    if (typeof window !== "undefined")
+-      window.removeEventListener("unload", this._unloadHandler);
+-    else if (
++    if (typeof window !== "undefined") {
++      window.removeEventListener("pagehide", this._pagehideHandler);
++      window.removeEventListener("pageshow", this._pageshowHandler);
++    } else if (
+       typeof process !== "undefined" &&
+       typeof process.off === "function"
+     )
