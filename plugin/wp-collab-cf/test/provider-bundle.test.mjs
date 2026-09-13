@@ -63,6 +63,8 @@ function loadProvider( t, legacyY ) {
 	const sockets = [];
 	const credentials = [];
 	const errors = [];
+	const listeners = new Map();
+	const registrations = [];
 	const timers = new Set();
 	class Socket extends EventTarget {
 		static OPEN = 1;
@@ -118,8 +120,16 @@ function loadProvider( t, legacyY ) {
 			wsUrl: 'wss://example.invalid',
 			tokenUrl: 'https://example.invalid/token',
 		},
-		addEventListener() {},
-		removeEventListener() {},
+		addEventListener( event, callback ) {
+			registrations.push( event );
+			if ( ! listeners.has( event ) ) {
+				listeners.set( event, new Set() );
+			}
+			listeners.get( event ).add( callback );
+		},
+		removeEventListener( event, callback ) {
+			listeners.get( event )?.delete( callback );
+		},
 		WebSocket: Socket,
 		BroadcastChannel: class {
 			postMessage() {}
@@ -154,7 +164,20 @@ function loadProvider( t, legacyY ) {
 	} );
 	vm.runInNewContext( source, context );
 	assert.equal( typeof creator, 'function' );
-	return { creator, wp, sockets, credentials, errors };
+	return {
+		creator,
+		wp,
+		sockets,
+		credentials,
+		errors,
+		registrations,
+		listeners,
+		dispatch( event, properties = {} ) {
+			for ( const callback of listeners.get( event ) || [] ) {
+				callback( { type: event, ...properties } );
+			}
+		},
+	};
 }
 
 function message( write ) {
@@ -167,6 +190,99 @@ function message( write ) {
 test( 'production bundle aliases Yjs instead of including a second implementation', () => {
 	assert.match( modules, /src\/yjs-shim\.js/ );
 	assert.doesNotMatch( modules, /node_modules\/yjs\// );
+} );
+
+async function loadPresenceProvider( t ) {
+	const runtime = loadProvider( t );
+	const doc = new Y.Doc();
+	const awareness = new Awareness( doc );
+	awareness.setLocalState( { user: { name: 'Editor' } } );
+	const provider = await runtime.creator( {
+		objectType: 'postType/post',
+		objectId: 123,
+		ydoc: doc,
+		awareness,
+		Y,
+	} );
+	t.after( () => {
+		provider.destroy();
+		awareness.destroy();
+		doc.destroy();
+	} );
+	for (
+		let attempt = 0;
+		! runtime.sockets.length && attempt < 20;
+		attempt++
+	) {
+		await delay( 5 );
+	}
+	assert.equal( runtime.sockets.length, 1 );
+	const socket = runtime.sockets[ 0 ];
+	socket.open();
+	return {
+		...runtime,
+		provider,
+		awareness,
+		lastPresence() {
+			const decoder = decoding.createDecoder( socket.messages.at( -1 ) );
+			assert.equal( decoding.readVarUint( decoder ), 1 );
+			const update = decoding.createDecoder(
+				decoding.readVarUint8Array( decoder )
+			);
+			assert.equal( decoding.readVarUint( update ), 1 );
+			assert.equal( decoding.readVarUint( update ), doc.clientID );
+			decoding.readVarUint( update ); // Awareness clock.
+			return JSON.parse( decoding.readVarString( update ) );
+		},
+	};
+}
+
+test( 'production provider never registers the forbidden unload event', async ( t ) => {
+	const runtime = await loadPresenceProvider( t );
+	assert.equal(
+		runtime.registrations.includes( 'unload' ),
+		false,
+		'Permissions policy violation: unload is not allowed in this document.'
+	);
+} );
+
+for ( const persisted of [ false, true ] ) {
+	test( `pagehide clears presence and pageshow restores only cached pages (persisted=${ persisted })`, async ( t ) => {
+		const runtime = await loadPresenceProvider( t );
+		const state = runtime.awareness.getLocalState();
+		runtime.dispatch( 'pageshow', { persisted: false } );
+		assert.deepEqual( runtime.awareness.getLocalState(), state );
+		for ( let cycle = 0; cycle < 2; cycle++ ) {
+			runtime.dispatch( 'pagehide', { persisted } );
+			assert.equal( runtime.awareness.getLocalState(), null );
+			assert.equal( runtime.lastPresence(), null );
+			runtime.dispatch( 'pageshow', { persisted } );
+			assert.deepEqual(
+				runtime.awareness.getLocalState(),
+				persisted ? state : null
+			);
+			assert.deepEqual(
+				runtime.lastPresence(),
+				persisted ? state : null
+			);
+		}
+	} );
+}
+
+test( 'cached pages preserve absent presence and destroy removes lifecycle listeners', async ( t ) => {
+	const runtime = await loadPresenceProvider( t );
+	runtime.awareness.setLocalState( null );
+	runtime.dispatch( 'pagehide', { persisted: true } );
+	runtime.dispatch( 'pageshow', { persisted: true } );
+	assert.equal( runtime.awareness.getLocalState(), null );
+	runtime.awareness.setLocalState( { user: { name: 'Editor' } } );
+	runtime.dispatch( 'pagehide', { persisted: true } );
+	runtime.provider.destroy();
+	for ( const event of [ 'pagehide', 'pageshow', 'unload' ] ) {
+		assert.equal( runtime.listeners.get( event )?.size || 0, 0 );
+	}
+	runtime.dispatch( 'pageshow', { persisted: true } );
+	assert.equal( runtime.awareness.getLocalState(), null );
 } );
 
 for ( const mode of [

@@ -5,7 +5,8 @@
   "scripts": {
     "build": "wp-scripts build",
     "start": "wp-scripts start",
-    "test": "node --test test/**/*.test.mjs"
+    "test": "node --test test/**/*.test.mjs",
+    "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
     "@wordpress/api-fetch": "^7.52.0",
@@ -16,6 +17,7 @@
   "devDependencies": {
     "@wordpress/scripts": "^30.0.0",
     "lib0": "0.2.117",
+    "patch-package": "8.0.1",
     "webpack": "5.105.4",
     "y-protocols": "1.0.7"
   }
